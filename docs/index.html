@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Download Lwedflix</title>
+<meta name="description" content="Download the Lwedflix desktop app for macOS, Windows or Linux.">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111'/%3E%3Cpath d='M22 12h9v32h14v8H22z' fill='%23ff9900'/%3E%3C/svg%3E">
+<!--
+  The download page. Works out the visitor's system, finds the matching
+  installer in the latest GitHub release, and starts the download. Host it
+  with GitHub Pages (Settings → Pages → Deploy from a branch → main, /docs).
+
+  Asset names come from package.json (electron-builder's "build"): keep the
+  patterns in PLATFORMS in step if those change.
+-->
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --card: #131313;
+    --line: rgba(255, 255, 255, 0.08);
+    --text: #f5f5f5;
+    --muted: #9a9aa3;
+    --accent: #ff9900;
+    --accent-deep: #ff6200;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { background: var(--bg); color: var(--text); }
+  body {
+    min-height: 100vh;
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    display: grid;
+    place-items: center;
+    padding: 48px 16px;
+    background:
+      radial-gradient(60% 45% at 50% 0%, rgba(255, 130, 0, 0.16), transparent 70%),
+      var(--bg);
+  }
+  main { width: 100%; max-width: 560px; text-align: center; }
+
+  .wordmark { height: 46px; width: auto; filter: drop-shadow(0 0 24px rgba(255, 140, 0, 0.35)); }
+  .tagline { margin-top: 14px; color: var(--muted); font-size: 16px; }
+
+  .card {
+    margin-top: 40px;
+    padding: 32px 28px 28px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 24px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+  }
+  .status { font-size: 13px; color: var(--muted); min-height: 20px; }
+  .status strong { color: var(--text); font-weight: 600; }
+
+  .primary {
+    display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+    margin-top: 18px; width: 100%; padding: 16px 22px;
+    border-radius: 16px; border: 0;
+    background: linear-gradient(180deg, #ffad33, var(--accent) 45%, var(--accent-deep));
+    color: #1a0d00; font-weight: 700; font-size: 16px; text-decoration: none;
+    box-shadow: 0 12px 30px rgba(255, 120, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .primary:hover { transform: translateY(-1px); box-shadow: 0 16px 36px rgba(255, 120, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+  .primary[aria-disabled="true"] { opacity: 0.45; pointer-events: none; }
+  .primary svg { width: 18px; height: 18px; }
+  .meta { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .meta a { color: var(--accent); }
+
+  .steps { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--line); text-align: left; counter-reset: step; }
+  .steps h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); font-weight: 600; margin-bottom: 12px; }
+  .steps ol { list-style: none; padding: 0; display: grid; gap: 10px; }
+  .steps li { display: grid; grid-template-columns: 26px 1fr; gap: 10px; font-size: 14px; color: #d6d6db; }
+  .steps li::before {
+    counter-increment: step; content: counter(step);
+    width: 22px; height: 22px; border-radius: 50%;
+    display: grid; place-items: center; margin-top: 1px;
+    background: rgba(255, 153, 0, 0.14); color: var(--accent); font-size: 12px; font-weight: 700;
+  }
+  code {
+    font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: rgba(255, 255, 255, 0.06); border: 1px solid var(--line);
+    padding: 1px 6px; border-radius: 6px; color: #f2f2f2; word-break: break-all;
+  }
+
+  .others { margin-top: 28px; }
+  .others h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); font-weight: 600; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .grid a {
+    display: block; padding: 12px 14px; border-radius: 14px; text-align: left;
+    background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line);
+    color: var(--text); text-decoration: none; font-size: 13px; font-weight: 600;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .grid a:hover { background: rgba(255, 153, 0, 0.08); border-color: rgba(255, 153, 0, 0.35); }
+  .grid a span { display: block; color: var(--muted); font-weight: 400; font-size: 12px; margin-top: 2px; }
+  .grid a[aria-disabled="true"] { opacity: 0.4; pointer-events: none; }
+  .grid a[aria-current="true"] { border-color: rgba(255, 153, 0, 0.45); background: rgba(255, 153, 0, 0.06); }
+
+  footer { margin-top: 28px; font-size: 12px; color: #6d6d75; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <svg class="wordmark" viewBox="0 0 418 100" role="img" aria-label="Lwedflix">
+    <defs>
+      <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#ffc24d"/><stop offset="0.45" stop-color="#ff9900"/><stop offset="1" stop-color="#ff6200"/>
+      </linearGradient>
+    </defs>
+    <g fill="url(#fill)" fill-rule="evenodd">
+      <path d="M0 0H18V84H46V100H0Z"/>
+      <path transform="translate(43 0)" d="M0 0H16L25 62L34 0H50L59 62L68 0H84L69 100H53L42 38L31 100H15Z"/>
+      <path transform="translate(131 0)" d="M0 0H44V16H18V42H40V58H18V84H44V100H0Z"/>
+      <path transform="translate(182 0)" d="M0 0H26C41 0 50 10 50 26V74C50 90 41 100 26 100H0ZM18 16V84H25C30 84 32 81 32 74V26C32 19 30 16 25 16Z"/>
+      <path transform="translate(239 0)" d="M0 0H42V16H18V43H38V59H18V100H0Z"/>
+      <path transform="translate(288 0)" d="M0 0H18V84H46V100H0Z"/>
+      <path transform="translate(339 0)" d="M0 0H18V100H0Z"/>
+      <path transform="translate(364 0)" d="M0 0H19L27 33L35 0H54L38 50L54 100H35L27 67L19 100H0L16 50Z"/>
+    </g>
+  </svg>
+  <p class="tagline">Movies, shows and anime — with watch parties.</p>
+
+  <section class="card" aria-live="polite">
+    <p class="status" id="status">Finding the right download for your computer…</p>
+    <a class="primary" id="primary" href="#" aria-disabled="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v13m0 0-5-5m5 5 5-5M4 20h16"/></svg>
+      <span id="primary-label">Download</span>
+    </a>
+    <p class="meta" id="meta"></p>
+    <div class="steps" id="steps" hidden>
+      <h2>Then</h2>
+      <ol id="steps-list"></ol>
+    </div>
+  </section>
+
+  <section class="others">
+    <h2>All downloads</h2>
+    <div class="grid" id="others"></div>
+  </section>
+
+  <footer>Every release, with notes: <a id="releases-link" href="#">GitHub Releases</a></footer>
+</main>
+
+<script>
+(() => {
+  const REPO = 'mohamedelwed/lwedflix';
+  const RELEASES = `https://github.com/${REPO}/releases`;
+
+  // Each installer the build produces, matched by file name.
+  const PLATFORMS = {
+    'mac-arm64': {
+      name: 'macOS', detail: 'Apple Silicon (M1 and later)',
+      match: (f) => /-arm64\.dmg$/.test(f),
+      steps: [
+        'Open the downloaded <code>.dmg</code> and drag Lwedflix into Applications.',
+        'The first time, macOS blocks it: open <strong>System Settings → Privacy &amp; Security</strong> and choose <strong>Open Anyway</strong>.',
+      ],
+    },
+    'mac-x64': {
+      name: 'macOS', detail: 'Intel',
+      match: (f) => /\.dmg$/.test(f) && !/arm64/.test(f),
+      steps: null, // same as Apple Silicon
+    },
+    windows: {
+      name: 'Windows', detail: '64-bit installer',
+      match: (f) => /\.exe$/i.test(f),
+      steps: [
+        'Run the downloaded <code>Lwedflix-Setup</code> file.',
+        'If Windows SmartScreen appears, choose <strong>More info → Run anyway</strong>.',
+      ],
+    },
+    'linux-deb': {
+      name: 'Linux', detail: 'Ubuntu / Debian (.deb)',
+      match: (f) => /_amd64\.deb$/.test(f),
+      steps: [
+        'Install it from a terminal in the download folder: <code>sudo apt install ./lwedflix_*_amd64.deb</code>',
+        'Open Lwedflix from your app menu.',
+      ],
+    },
+    'linux-appimage': {
+      name: 'Linux', detail: 'AppImage, any distro',
+      match: (f) => /\.AppImage$/.test(f),
+      steps: [
+        'Make it runnable: <code>chmod +x Lwedflix-*.AppImage</code> (or Properties → Allow executing).',
+        'Double-click it to start. On Ubuntu 24.04 or later, use the .deb instead — it installs the permission profile Ubuntu requires.',
+      ],
+    },
+  };
+  PLATFORMS['mac-x64'].steps = PLATFORMS['mac-arm64'].steps;
+
+  const $ = (id) => document.getElementById(id);
+  const status = $('status');
+  const primary = $('primary');
+  $('releases-link').href = RELEASES;
+
+  // Browsers report every Mac as "Intel" in the user agent. Chromium-based
+  // ones can say what the CPU really is; elsewhere the WebGL renderer may
+  // give it away. null means we couldn't tell.
+  async function appleSilicon() {
+    try {
+      const values = await navigator.userAgentData?.getHighEntropyValues(['architecture']);
+      if (values?.architecture) return values.architecture === 'arm';
+    } catch {}
+    try {
+      const gl = document.createElement('canvas').getContext('webgl');
+      const info = gl && gl.getExtension('WEBGL_debug_renderer_info');
+      const renderer = info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : '';
+      if (/Apple M\d/i.test(renderer)) return true;
+      if (/Intel|AMD|Radeon|NVIDIA/i.test(renderer)) return false;
+    } catch {}
+    return null;
+  }
+
+  async function detect() {
+    const ua = navigator.userAgent;
+    // iPadOS asks for desktop sites as "Macintosh", but has a touch screen.
+    if (/Android|iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) {
+      return { key: null, mobile: true };
+    }
+    if (/Windows/i.test(ua)) return { key: 'windows' };
+    if (/Macintosh|Mac OS X/i.test(ua)) {
+      const arm = await appleSilicon();
+      return { key: arm === false ? 'mac-x64' : 'mac-arm64', guessed: arm === null };
+    }
+    if (/Linux|X11|CrOS/i.test(ua)) {
+      // Only some browsers say which distro; when one does, the .deb is the
+      // better fit there.
+      return { key: /Ubuntu|Debian|Mint|Pop!_OS/i.test(ua) ? 'linux-deb' : 'linux-appimage' };
+    }
+    return { key: null };
+  }
+
+  async function latestRelease() {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+      headers: { Accept: 'application/vnd.github+json' },
+    });
+    if (res.status === 404) return null; // nothing published yet
+    if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+    return res.json();
+  }
+
+  const findAsset = (release, key) =>
+    release?.assets?.find((a) => PLATFORMS[key].match(a.name)) ?? null;
+  const size = (bytes) => `${Math.round(bytes / 1e6)} MB`;
+  const label = (key) => `${PLATFORMS[key].name} · ${PLATFORMS[key].detail}`;
+
+  function renderOthers(release, current) {
+    const grid = $('others');
+    grid.textContent = '';
+    for (const key of Object.keys(PLATFORMS)) {
+      const asset = findAsset(release, key);
+      const link = document.createElement('a');
+      link.href = asset ? asset.browser_download_url : RELEASES;
+      if (!asset && release) link.setAttribute('aria-disabled', 'true');
+      if (key === current) link.setAttribute('aria-current', 'true');
+      link.innerHTML = `${PLATFORMS[key].name}<span>${PLATFORMS[key].detail}${asset ? ` · ${size(asset.size)}` : ''}${key === current ? ' · yours' : ''}</span>`;
+      grid.appendChild(link);
+    }
+  }
+
+  function showSteps(key) {
+    const list = $('steps-list');
+    list.innerHTML = PLATFORMS[key].steps.map((s) => `<li><span>${s}</span></li>`).join('');
+    $('steps').hidden = false;
+  }
+
+  async function main() {
+    const [found, release] = await Promise.all([
+      detect(),
+      latestRelease().catch((err) => ({ error: err })),
+    ]);
+
+    if (release?.error) {
+      status.textContent = "Couldn't reach GitHub to find the latest version.";
+      primary.href = RELEASES;
+      primary.removeAttribute('aria-disabled');
+      $('primary-label').textContent = 'Open the downloads page';
+      renderOthers(null, found.key);
+      return;
+    }
+    renderOthers(release, found.key);
+
+    if (!release) {
+      status.textContent = 'No version has been published yet — check back soon.';
+      $('primary-label').textContent = 'Download';
+      return;
+    }
+
+    // Goes into innerHTML below, so keep it to version characters.
+    const version = String(release.tag_name).replace(/^v/, '').replace(/[^\w.-]/g, '');
+    if (found.mobile) {
+      status.innerHTML = 'Lwedflix is a desktop app — open this page on a <strong>Mac, Windows or Linux</strong> computer.';
+      $('primary-label').textContent = `Lwedflix ${version}`;
+      return;
+    }
+    if (!found.key) {
+      status.textContent = "We couldn't tell which computer this is — pick your download below.";
+      return;
+    }
+
+    const asset = findAsset(release, found.key);
+    if (!asset) {
+      status.innerHTML = `There's no ${PLATFORMS[found.key].name} download in Lwedflix ${version} — see all downloads below.`;
+      return;
+    }
+
+    primary.href = asset.browser_download_url;
+    primary.removeAttribute('aria-disabled');
+    $('primary-label').textContent = `Download for ${PLATFORMS[found.key].name}`;
+    $('meta').innerHTML =
+      `Lwedflix ${version} · ${PLATFORMS[found.key].detail} · ${size(asset.size)}` +
+      (found.key.startsWith('mac') && found.guessed
+        ? ` · <a href="${findAsset(release, 'mac-x64')?.browser_download_url ?? RELEASES}">Intel Mac?</a>`
+        : '');
+    showSteps(found.key);
+
+    // Start the download straight away, once per visit, so the page does
+    // what it says. The button stays for anyone whose browser held it back.
+    let started = false;
+    try {
+      started = sessionStorage.getItem(`started:${asset.name}`) === '1';
+      sessionStorage.setItem(`started:${asset.name}`, '1');
+    } catch {}
+    if (started) {
+      status.innerHTML = `<strong>${label(found.key)}</strong> — download again with the button below.`;
+    } else {
+      status.innerHTML = `Your download for <strong>${label(found.key)}</strong> is starting…`;
+      setTimeout(() => { location.href = asset.browser_download_url; }, 900);
+    }
+  }
+
+  main();
+})();
+</script>
+</body>
+</html>

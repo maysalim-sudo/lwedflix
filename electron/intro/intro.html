@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lwedflix</title>
+<!--
+  Launch intro. Plays while the local server boots, then hands over to the
+  app through the preload bridge (window.lwedflix). Opened directly in a
+  browser there's no bridge, so it loops as a preview.
+
+  Sequence: the L's stem flickers on like a projector lamp, light runs along
+  the baseline and each letter rises out of it white-hot, cooling to orange.
+  It holds on the wordmark until the app is ready, then the stem breaks into
+  ribbons of light that rush past the camera.
+-->
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --orange: #ff9900;
+    --ember: #ff5a00;
+    --hot: #ffe2b0;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    overflow: hidden;
+    cursor: default;
+    user-select: none;
+    -webkit-app-region: no-drag;
+  }
+
+  .stage {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+  }
+
+  /* Faint projector grain and a vignette, so the black has some depth. */
+  .grain {
+    position: fixed;
+    inset: -50%;
+    pointer-events: none;
+    opacity: 0.07;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .9 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    animation: grain 0.5s steps(1) infinite;
+  }
+  @keyframes grain {
+    0%   { transform: translate(0, 0); }
+    20%  { transform: translate(-3%, 2%); }
+    40%  { transform: translate(2%, -3%); }
+    60%  { transform: translate(-2%, -1%); }
+    80%  { transform: translate(3%, 3%); }
+  }
+  .vignette {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 35%, rgba(0, 0, 0, 0.85) 100%);
+  }
+
+  .bloom {
+    position: absolute;
+    width: min(110vw, 1400px);
+    aspect-ratio: 2.4;
+    background: radial-gradient(ellipse at center, rgba(255, 128, 0, 0.26) 0%, rgba(255, 90, 0, 0.08) 38%, transparent 68%);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .wordmark {
+    position: relative;
+    width: min(58vw, 760px);
+    aspect-ratio: var(--ratio);
+    filter: drop-shadow(0 0 1.4vw rgba(255, 120, 0, 0.35));
+  }
+
+  .glyph {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    overflow: hidden; /* letters rise out of the baseline, not from below it */
+  }
+  .glyph.lead { overflow: visible; }
+  .glyph-inner, .glyph svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .glyph-inner { transform: translateY(105%); }
+  .glyph.lead .glyph-inner { transform: none; clip-path: inset(50% 61% 50% 0); }
+
+  .sheen {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.8;
+    -webkit-mask-image: linear-gradient(105deg, transparent 42%, #000 50%, transparent 58%);
+    mask-image: linear-gradient(105deg, transparent 42%, #000 50%, transparent 58%);
+    -webkit-mask-size: 260% 100%;
+    mask-size: 260% 100%;
+    -webkit-mask-position: 100% 0;
+    mask-position: 100% 0;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+  }
+  .sheen .glyph { overflow: visible; }
+  .sheen .glyph-inner { transform: none; }
+  .sheen path { fill: var(--hot); }
+
+  /* The light that runs along the baseline. */
+  .beam {
+    position: absolute;
+    bottom: -0.15%;
+    height: max(2px, 0.25vw);
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(255, 153, 0, 0) 0%, var(--orange) 55%, #fff4dc 100%);
+    box-shadow: 0 0 1vw 0.15vw rgba(255, 140, 0, 0.7);
+    transform-origin: left center;
+    transform: scaleX(0);
+  }
+
+  /* Only appears if the app is still starting after the reveal. */
+  .loader {
+    position: absolute;
+    top: calc(100% + 7vh);
+    left: 50%;
+    width: 18%;
+    height: 2px;
+    margin-left: -9%;
+    border-radius: 2px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.07);
+    opacity: 0;
+    transition: opacity 0.6s ease;
+  }
+  .loader.visible { opacity: 1; }
+  .loader::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    width: 40%;
+    background: linear-gradient(90deg, transparent, var(--orange), transparent);
+    animation: sweep 1.3s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  }
+  @keyframes sweep {
+    from { transform: translateX(-100%); }
+    to   { transform: translateX(250%); }
+  }
+
+  .ribbons {
+    position: fixed;
+    pointer-events: none;
+    opacity: 0;
+    will-change: transform;
+  }
+  .ribbons span {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    will-change: transform;
+    -webkit-mask-image: linear-gradient(180deg, transparent, #000 16%, #000 84%, transparent);
+    mask-image: linear-gradient(180deg, transparent, #000 16%, #000 84%, transparent);
+  }
+</style>
+</head>
+<body>
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <defs>
+      <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#ffc24d"/>
+        <stop offset="0.45" stop-color="#ff9900"/>
+        <stop offset="1" stop-color="#ff6200"/>
+      </linearGradient>
+    </defs>
+  </svg>
+
+  <div class="grain"></div>
+  <main class="stage">
+    <div class="bloom"></div>
+    <div class="wordmark" role="img" aria-label="Lwedflix">
+      <div class="letters"></div>
+      <div class="sheen"></div>
+      <div class="beam"></div>
+      <div class="loader"></div>
+    </div>
+  </main>
+  <div class="vignette"></div>
+  <div class="ribbons"></div>
+
+<script>
+(() => {
+  // Letterforms on a 100-unit cap height, drawn as paths so the logo needs
+  // no font. x includes kerning (W tucks under the L's open corner).
+  const GLYPHS = [
+    { x: 0,   w: 46, d: 'M0 0H18V84H46V100H0Z' },
+    { x: 43,  w: 84, d: 'M0 0H16L25 62L34 0H50L59 62L68 0H84L69 100H53L42 38L31 100H15Z' },
+    { x: 131, w: 44, d: 'M0 0H44V16H18V42H40V58H18V84H44V100H0Z' },
+    { x: 182, w: 50, d: 'M0 0H26C41 0 50 10 50 26V74C50 90 41 100 26 100H0ZM18 16V84H25C30 84 32 81 32 74V26C32 19 30 16 25 16Z' },
+    { x: 239, w: 42, d: 'M0 0H42V16H18V43H38V59H18V100H0Z' },
+    { x: 288, w: 46, d: 'M0 0H18V84H46V100H0Z' },
+    { x: 339, w: 18, d: 'M0 0H18V100H0Z' },
+    { x: 364, w: 54, d: 'M0 0H19L27 33L35 0H54L38 50L54 100H35L27 67L19 100H0L16 50Z' },
+  ];
+  const TOTAL_W = 418;
+  const STEM_W = 18; // the lead L's stem, in glyph units
+
+  const RIBBON_COLORS = ['#ff9900', '#ffb347', '#ff7a00', '#ff5a00', '#ffcf70', '#e85d04', '#ffa31a', '#ff3d1f', '#ffe0a8'];
+
+  const ease = {
+    out: 'cubic-bezier(0.16, 1, 0.3, 1)',
+    in: 'cubic-bezier(0.7, 0, 0.84, 0)',
+    inOut: 'cubic-bezier(0.65, 0, 0.35, 1)',
+  };
+
+  const bridge = window.lwedflix;
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const $ = (selector) => document.querySelector(selector);
+  const wordmark = $('.wordmark');
+  const bloom = $('.bloom');
+  const beam = $('.beam');
+  const sheen = $('.sheen');
+  const loader = $('.loader');
+  const ribbons = $('.ribbons');
+
+  wordmark.style.setProperty('--ratio', `${TOTAL_W} / 100`);
+
+  function buildGlyphs(container) {
+    return GLYPHS.map((g, i) => {
+      const glyph = document.createElement('div');
+      glyph.className = i === 0 ? 'glyph lead' : 'glyph';
+      glyph.style.left = `${(g.x / TOTAL_W) * 100}%`;
+      glyph.style.width = `${(g.w / TOTAL_W) * 100}%`;
+      glyph.innerHTML =
+        `<div class="glyph-inner"><svg viewBox="0 0 ${g.w} 100" preserveAspectRatio="none">` +
+        `<path d="${g.d}" fill="url(#fill)" fill-rule="evenodd"/></svg></div>`;
+      container.appendChild(glyph);
+      return glyph;
+    });
+  }
+
+  const glyphs = buildGlyphs($('.letters'));
+  buildGlyphs(sheen);
+  const [lead, ...rest] = glyphs;
+  const leadInner = lead.firstElementChild;
+
+  const play = (el, keyframes, options) => el.animate(keyframes, { fill: 'both', ...options });
+
+  // ---- Reveal ------------------------------------------------------------
+
+  function reveal() {
+    if (reducedMotion) {
+      leadInner.style.clipPath = 'none';
+      rest.forEach((g) => (g.firstElementChild.style.transform = 'none'));
+      return [play(wordmark, [{ opacity: 0 }, { opacity: 1 }], { duration: 500 })];
+    }
+
+    const BEAM_START = 760;
+    const BEAM_TIME = 620;
+    const animations = [
+      // Stem ignites from its centre, then the foot slides out.
+      play(leadInner, [
+        { clipPath: 'inset(50% 61% 50% 0)', easing: ease.out },
+        { clipPath: 'inset(0% 61% 0% 0)', offset: 0.5 },
+        { clipPath: 'inset(0% 61% 0% 0)', offset: 0.62, easing: ease.out },
+        { clipPath: 'inset(0% 0% 0% 0)' },
+      ], { duration: 820, delay: 150 }),
+      // ...with a projector-lamp flicker as it catches.
+      play(leadInner, [
+        { filter: 'brightness(2.2)' },
+        { filter: 'brightness(0.35)', offset: 0.18 },
+        { filter: 'brightness(2.4)', offset: 0.3 },
+        { filter: 'brightness(0.7)', offset: 0.42 },
+        { filter: 'brightness(1.8)', offset: 0.6 },
+        { filter: 'brightness(1)' },
+      ], { duration: 700, delay: 260, easing: 'linear' }),
+      // Light runs from the end of the foot to the far side of the X.
+      play(beam, [
+        { transform: 'scaleX(0)', opacity: 1 },
+        { transform: 'scaleX(1)', opacity: 1, offset: 0.55 },
+        { transform: 'scaleX(1)', opacity: 0 },
+      ], { duration: BEAM_TIME / 0.55, delay: BEAM_START, easing: ease.inOut }),
+      play(bloom, [{ opacity: 0 }, { opacity: 1 }], { duration: 1100, delay: 800, easing: ease.out }),
+      play(sheen, [
+        { webkitMaskPosition: '100% 0', maskPosition: '100% 0' },
+        { webkitMaskPosition: '0% 0', maskPosition: '0% 0' },
+      ], { duration: 900, delay: 1900, easing: ease.inOut }),
+    ];
+
+    beam.style.left = `${(46 / TOTAL_W) * 100}%`;
+    beam.style.right = '0';
+
+    // Each letter rises as the beam passes under it, white-hot, then cools.
+    for (const [i, glyph] of rest.entries()) {
+      const g = GLYPHS[i + 1];
+      const passAt = BEAM_START + BEAM_TIME * ((g.x - 46) / (TOTAL_W - 46));
+      animations.push(
+        play(glyph.firstElementChild, [
+          { transform: 'translateY(105%)', filter: 'brightness(2.8) saturate(0.2)' },
+          { transform: 'translateY(0%)', filter: 'brightness(1.7) saturate(0.6)', offset: 0.5 },
+          { transform: 'translateY(0%)', filter: 'brightness(1) saturate(1)' },
+        ], { duration: 900, delay: passAt - 40, easing: ease.out })
+      );
+    }
+    return animations;
+  }
+
+  // ---- Hold --------------------------------------------------------------
+
+  let breathing = null;
+  let loaderTimer = 0;
+
+  function hold() {
+    if (!reducedMotion) {
+      breathing = bloom.animate(
+        [{ opacity: 1, transform: 'scale(1)' }, { opacity: 0.6, transform: 'scale(1.06)' }],
+        { duration: 1600, direction: 'alternate', iterations: Infinity, easing: ease.inOut }
+      );
+    }
+    loaderTimer = setTimeout(() => loader.classList.add('visible'), 900);
+  }
+
+  // ---- Exit --------------------------------------------------------------
+
+  async function exit() {
+    clearTimeout(loaderTimer);
+    loader.classList.remove('visible');
+    breathing?.cancel();
+
+    if (reducedMotion) {
+      await play(document.body, [{ opacity: 1 }, { opacity: 0 }], { duration: 350 }).finished;
+      return;
+    }
+
+    // The other letters fold back into the L...
+    const shift = wordmark.getBoundingClientRect().width * 0.06;
+    rest.forEach((glyph, i) =>
+      play(glyph, [
+        { transform: 'translateX(0)', opacity: 1, filter: 'blur(0)' },
+        { transform: `translateX(${-shift}px)`, opacity: 0, filter: 'blur(6px)' },
+      ], { duration: 420, delay: (rest.length - 1 - i) * 22, easing: ease.in })
+    );
+    play(sheen, [{ opacity: 0.8 }, { opacity: 0 }], { duration: 200 });
+    play(bloom, [{ opacity: 1 }, { opacity: 0 }], { duration: 500, easing: ease.in });
+    play(lead, [{ opacity: 1 }, { opacity: 0 }], { duration: 260, delay: 300 });
+
+    // ...whose stem splits into ribbons of light that rush the camera.
+    const box = lead.getBoundingClientRect();
+    const stemW = box.width * (STEM_W / GLYPHS[0].w);
+    Object.assign(ribbons.style, {
+      left: `${box.left}px`,
+      top: `${box.top}px`,
+      width: `${stemW}px`,
+      height: `${box.height}px`,
+    });
+
+    const COUNT = 26;
+    const stripes = [];
+    for (let i = 0; i < COUNT; i++) {
+      const color = RIBBON_COLORS[Math.floor(Math.random() * RIBBON_COLORS.length)];
+      const stripe = document.createElement('span');
+      stripe.style.left = `${(i / COUNT) * 100}%`;
+      stripe.style.width = `${100 / COUNT + 0.8}%`;
+      // A soft highlight down the middle reads as a lit ribbon, not paint.
+      stripe.style.background =
+        `linear-gradient(90deg, rgba(0,0,0,.35), transparent 35%, rgba(255,245,220,.35) 55%, transparent 75%, rgba(0,0,0,.35)), ${color}`;
+      ribbons.appendChild(stripe);
+      stripes.push(stripe);
+    }
+
+    const scale = (Math.max(innerWidth, innerHeight) * 2.6) / stemW;
+    const dx = innerWidth / 2 - (box.left + stemW / 2);
+    const dy = innerHeight / 2 - (box.top + box.height / 2);
+    const DIVE = 1300;
+    const DIVE_DELAY = 220;
+    // Two beats: glide to centre while barely growing, then an accelerating
+    // plunge. `translate` and `scale` are animated as separate properties so
+    // each beat can have its own curve.
+    const CENTRED = 0.36;
+    const plunge = 'cubic-bezier(0.8, 0, 1, 0.55)';
+
+    stripes.forEach((stripe, i) => {
+      const spread = (i - (COUNT - 1) / 2) * 0.5;
+      const drift = (Math.random() - 0.5) * 80;
+      const stretch = 1 + Math.random() * 1.6;
+      play(stripe, [
+        { translate: '0 0', scale: '1 1', opacity: 1 },
+        { translate: '0 0', scale: '1 1', opacity: 1, offset: CENTRED, easing: plunge },
+        { translate: `${spread}px ${drift}%`, scale: `1 ${stretch}`, opacity: Math.random() > 0.6 ? 0.3 : 1 },
+      ], { duration: DIVE, delay: DIVE_DELAY });
+    });
+
+    play(ribbons, [{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: DIVE_DELAY + 40, fill: 'forwards' });
+    const dive = play(ribbons, [
+      { translate: '0 0', scale: '1', easing: ease.inOut },
+      { translate: `${dx}px ${dy}px`, scale: '1.8', offset: CENTRED, easing: plunge },
+      { translate: `${dx}px ${dy}px`, scale: String(scale) },
+    ], { duration: DIVE, delay: DIVE_DELAY });
+    const fade = play(document.body, [
+      { opacity: 1 },
+      { opacity: 1, offset: 0.8 },
+      { opacity: 0 },
+    ], { duration: DIVE, delay: DIVE_DELAY });
+
+    await Promise.all([dive.finished, fade.finished]);
+  }
+
+  // ---- Orchestration -----------------------------------------------------
+
+  const appReady = bridge
+    ? bridge.whenAppReady()
+    : new Promise((resolve) => setTimeout(resolve, 400)); // browser preview
+
+  const revealAnimations = reveal();
+  const revealed = Promise.all(revealAnimations.map((a) => a.finished));
+
+  // Click or any key skips straight to the end of the reveal.
+  const skip = () => revealAnimations.forEach((a) => a.finish());
+  addEventListener('pointerdown', skip);
+  addEventListener('keydown', skip);
+
+  revealed
+    .then(() => {
+      hold();
+      return appReady;
+    })
+    .then(exit)
+    .then(() => {
+      if (bridge) bridge.introFinished();
+      else setTimeout(() => location.reload(), 900);
+    });
+})();
+</script>
+</body>
+</html>

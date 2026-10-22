@@ -1,0 +1,151 @@
+{
+  "name": "lwedflix",
+  "productName": "Lwedflix",
+  "version": "1.1.0",
+  "description": "Movies, shows and anime, with watch parties",
+  "author": "Mohamed Elwed",
+  "homepage": "https://github.com/mohamedelwed/lwedflix",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "next dev",
+    "app": "npm run build:server && electron .",
+    "start": "electron .",
+    "build:server": "node scripts/build-server.mjs",
+    "icon": "node scripts/make-icon.mjs",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "dist:mac": "npm run build:server && electron-builder --mac --publish never",
+    "dist:win": "npm run build:server && electron-builder --win --publish never",
+    "dist:linux": "npm run build:server && electron-builder --linux --publish never",
+    "dist": "npm run build:server && electron-builder --mac --win --linux --publish never",
+    "release": "npm run build:server && electron-builder --mac --win --linux --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.103.0",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "clsx": "^2.1.1",
+    "electron": "44.9.3",
+    "electron-builder": "26.15.3",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.3",
+    "framer-motion": "^12.38.0",
+    "lucide-react": "^1.8.0",
+    "next": "16.2.3",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "build": {
+    "appId": "app.lwedflix.desktop",
+    "productName": "Lwedflix",
+    "copyright": "© Mohamed Elwed",
+    "protocols": [
+      {
+        "name": "Lwedflix watch party",
+        "schemes": [
+          "lwedflix"
+        ]
+      }
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "mohamedelwed",
+        "repo": "lwedflix",
+        "releaseType": "release"
+      }
+    ],
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "server-bundle",
+        "to": "server"
+      },
+      {
+        "from": "server-bundle/node_modules",
+        "to": "server/node_modules"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.entertainment",
+      "icon": "build/icon.png",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "Lwedflix ${version}"
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "Lwedflix",
+      "artifactName": "Lwedflix-Setup-${version}.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "AudioVideo",
+      "synopsis": "Movies, shows and anime, with watch parties",
+      "maintainer": "Mohamed Elwed",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "deb": {
+      "compression": "gz"
+    }
+  }
+}
