@@ -4,10 +4,21 @@ A desktop app for movies, TV shows and anime, with synced watch parties —
 for macOS, Windows and Linux.
 
 - Browse and search through TMDB; stream from embedded players, with a
-  choice of servers.
+  choice of servers. A server that says it doesn't have the title, or whose
+  play button doesn't start anything within 20 seconds, is swapped for the
+  next one automatically.
+- Movies and episodes resume where you stopped; at the end of an episode,
+  *Up next* counts down to the next one (across seasons too).
+- Player shortcuts: Space/K play-pause, ←/J and →/L ±10 s, M mute,
+  F fullscreen, P mini player (picture-in-picture).
+- The players' ad and tracker requests are blocked, and so are the
+  "downloads" their ads push.
 - **Watch parties**: start one from any title and share the code or a
   `lwedflix://watch/<CODE>` link. No account needed. Play, pause and seek in
-  anyone's player move everyone's.
+  anyone's player move everyone's — or only the host's, if the host locks
+  it. The host picks episodes (and *Up next* moves everyone on), everyone
+  can send emoji reactions over the video, and signed-in members can invite
+  friends straight to their messages.
 - Accounts (optional) for friends, messages, posts, watchlists and history,
   on Supabase.
 - Updates itself from GitHub Releases.
@@ -25,8 +36,11 @@ src/               the app: pages (src/app), components, libraries
 electron/
   main.js          window, local server, deep links, updates, player relay
   preload.js       the bridges: intro, app, and the player bridge
+  adblock.js       ad/tracker blocklist and download blocking
   intro/           the launch animation
-scripts/           build-server.mjs, make-icon.mjs
+scripts/           build-server.mjs, make-icon.mjs, release.mjs
+tests/             unit tests (node:test); tests/e2e: harnesses run in Electron
+.github/workflows  CI, and the release build
 build/icon.png     app icon (electron-builder derives .icns/.ico from it)
 docs/index.html    the download page (GitHub Pages)
 supabase/          database schema, as migrations
@@ -35,17 +49,21 @@ supabase/          database schema, as migrations
 **The player bridge** is what a website can't do: the preload also runs
 inside the embedded players' cross-origin frames (`nodeIntegrationInSubFrames`),
 finds the `<video>`, reports its state and applies play/pause/seek. Watch
-parties sync through it (`src/lib/partySync.ts`), and progress and episode
-auto-marking work on every server because of it.
+parties sync through it (`src/lib/partySync.ts`), and progress, resume,
+*Up next*, shortcuts, the mini player and automatic server switching work on
+every server because of it.
 
 **Watch parties** are live Supabase Realtime channels (`src/lib/watchRoom.ts`);
-nothing is stored. Presence carries only who's there and the title; positions,
-chat and sync go over Broadcast, because Realtime closes the channel of a
-client that sends more than 5 Presence updates in 30 seconds.
+nothing is stored. Presence carries only who's there, the title and the
+host's lock; positions, chat, reactions, episode changes and sync go over
+Broadcast, because Realtime closes the channel of a client that sends more
+than 5 Presence updates in 30 seconds. Presence updates are coalesced to one
+every 6.5 seconds, and each carries a revision, since Realtime keeps every
+presence a client has sent rather than only the latest.
 
 ## Setup
 
-Requires Node 22.12+.
+Requires Node 22.18+ (24 recommended; the tests run TypeScript directly).
 
 ```bash
 npm install
@@ -70,6 +88,21 @@ npm run lint
 
 In the browser (`npm run dev`) there's no player bridge, so playback doesn't
 sync and progress isn't tracked; everything else works.
+
+## Test
+
+```bash
+npm test                 # unit tests: party sync, links, ad blocking, resume, episodes
+npm run build:server     # the end-to-end harnesses run the staged server...
+npm run test:e2e         # ...a three-guest watch party with real streams (~1 min)
+npm run test:providers   # which servers stream right now, with ad blocking on
+```
+
+`npm test` runs in CI on every push and pull request. The other two need a
+display, the network and live providers, so they're run by hand — after
+changing the player bridge, watch parties or `electron/adblock.js`
+(compare `npm run test:providers -- --no-block` when a server stops
+playing). Screenshots land in `tests/e2e/output/`.
 
 ## Build installers
 
@@ -98,12 +131,27 @@ All of these build on a Mac.
 Installed apps check this repo's GitHub Releases 15 seconds after launch and
 every 6 hours (also *Check for Updates…* in the menu).
 
+**From GitHub Actions** (each installer built on its own OS):
+
+1. Once: add the repository secrets `TMDB_ACCESS_TOKEN`,
+   `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` and optionally
+   `YOUTUBE_API_KEY` (Settings → Secrets and variables → Actions).
+2. Bump `version` in `package.json` and push.
+3. Actions → *Release* → *Run workflow*.
+
+**From your Mac:**
+
 1. Bump `version` in `package.json`.
 2. Create a GitHub token with write access to this repo's contents and
    `export GH_TOKEN=<token>`.
-3. `npm run release` — builds every platform and uploads the installers and
-   `latest*.yml` update feeds to a **draft** release `v<version>`.
-4. Publish the draft on GitHub.
+3. `npm run release` (`scripts/release.mjs`).
+
+Either way, release `v<version>` is created as a draft, every platform's
+installers and `latest*.yml` update feeds are uploaded into it, and it's
+published once they're all up. A version that's already published is
+refused. The draft comes first because uploads run in parallel: with no
+release to upload into, each one creates its own, leaving duplicate
+releases for one tag.
 
 Windows and Linux download updates in the background and install on restart.
 macOS can only install updates signed with the same Apple Developer ID as the

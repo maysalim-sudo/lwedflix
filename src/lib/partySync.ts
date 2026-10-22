@@ -76,6 +76,14 @@ export interface PartySyncOptions {
   command: (command: PlayerCommand) => void;
   /** Someone else played, paused or seeked. */
   onRemoteAction?: (state: PartyState) => void;
+  /**
+   * Whether this member may change the room's playback right now (the host
+   * can lock it to themselves). Asked on every local action; omitted means
+   * yes.
+   */
+  canControl?: () => boolean;
+  /** A local action was undone because this member can't control playback. */
+  onBlocked?: () => void;
   now?: () => number;
 }
 
@@ -147,6 +155,13 @@ export class PartySync {
     if (state.event !== 'play' && state.event !== 'pause' && state.event !== 'seeked') return;
     if (this.isEcho(state.event, now)) return;
     if (this.streamAt && this.heardRoom && this.awayFromRoom(now)) return; // settling; see tick()
+    if (this.options.canControl && !this.options.canControl()) {
+      // Not this member's to change: ask the room where it is and snap back.
+      this.options.onBlocked?.();
+      this.joined = false;
+      this.hello(now);
+      return;
+    }
     this.broadcast('action', state.event);
   }
 

@@ -1,0 +1,102 @@
+# Builds every installer on its own OS and publishes them as one GitHub
+# release, which the app's updater and the download page read. The same
+# flow as `npm run release`, without needing three computers:
+#
+#   1. bump "version" in package.json and push
+#   2. Actions → Release → Run workflow
+#
+# A draft is created first so the three builds upload into one release
+# (in parallel they would each create their own), and it's only published
+# once every platform's update file is there — the updater never sees a
+# half-finished release.
+#
+# Needs these repository secrets (Settings → Secrets and variables → Actions):
+# TMDB_ACCESS_TOKEN, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY,
+# and optionally YOUTUBE_API_KEY. They end up inside the installers, as with
+# a local build (see .env.example).
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.draft.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          tag="v$version"
+          if state=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$state" = "false" ]; then
+              echo "::error::$tag is already published. Bump the version in package.json first."
+              exit 1
+            fi
+            echo "Reusing the existing draft $tag."
+          else
+            gh release create "$tag" --draft --title "Lwedflix $version" --generate-notes --target "$GITHUB_SHA"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: draft
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-latest
+            platform: --mac
+          - os: windows-latest
+            platform: --win
+          - os: ubuntu-latest
+            platform: --linux
+    runs-on: ${{ matrix.os }}
+    env:
+      NEXT_PUBLIC_TMDB_BASE_URL: https://api.themoviedb.org/3
+      TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:server
+      # Uploads into the draft above (package.json → build.publish).
+      - run: npx electron-builder ${{ matrix.platform }} --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ needs.draft.outputs.version }}
+        run: |
+          assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          echo "$assets"
+          for manifest in latest.yml latest-mac.yml latest-linux.yml; do
+            if ! grep -qx "$manifest" <<< "$assets"; then
+              echo "::error::$manifest is missing from $TAG; leaving it as a draft."
+              exit 1
+            fi
+          done
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

@@ -12,9 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // Electron shell and build scripts (plain JS), and generated output.
+    // Electron shell, build scripts and e2e harnesses (plain JS), and generated output.
     "electron/**",
     "scripts/**",
+    "tests/e2e/**",
     "server-bundle/**",
     "release/**",
   ]),

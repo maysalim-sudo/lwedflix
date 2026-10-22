@@ -7,10 +7,14 @@ import { useAuth } from '@/components/AuthProvider';
 import VideoPlayer from '@/components/VideoPlayer';
 import FriendAvatar from '@/components/FriendAvatar';
 import UserLink from '@/components/UserLink';
+import UpNextCard from '@/components/UpNextCard';
+import InviteFriendsButton from '@/components/party/InviteFriendsButton';
+import { ReactionBar, ReactionsOverlay, type FloatingReaction } from '@/components/party/Reactions';
 import {
   joinParty,
   partyHost,
   getStartedTitle,
+  rememberTitle,
   getGuest,
   saveGuestName,
   cleanName,
@@ -21,11 +25,13 @@ import {
   type PartyMember,
   type PartyChatMessage,
   type PartyConnection,
+  type PartyTitle,
 } from '@/lib/watchRoom';
 import { fetchProfiles } from '@/lib/friends';
 import { timeAgo } from '@/lib/posts';
 import { getDesktopPlayer } from '@/lib/desktopPlayer';
 import { PartySync, isPartyMessage } from '@/lib/partySync';
+import { adjacentEpisode, type EpisodeRef } from '@/lib/episodes';
 import {
   Popcorn,
   Loader2,
@@ -34,6 +40,10 @@ import {
   Send,
   Play,
   ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  Lock,
+  LockOpen,
 } from 'lucide-react';
 
 interface Identity {
@@ -50,6 +60,8 @@ const useIsClient = () => useSyncExternalStore(noSubscribe, () => true, () => fa
 
 /** How long to wait for someone carrying the title before calling the room empty. */
 const EMPTY_AFTER_MS = 6000;
+/** How long a reaction floats over the player. */
+const REACTION_MS = 2800;
 
 export default function WatchPartyPage() {
   const params = useParams<{ code: string }>();
@@ -111,7 +123,7 @@ export default function WatchPartyPage() {
 
   // Latest position read from the player, so the heartbeat has something
   // to send between progress events.
-  const myPosition = useRef<{ watched: number; duration: number } | null>(null);
+  const myPosition = useRef<{ watched: number; duration: number; episodeKey: string | null } | null>(null);
 
   const [syncHint, setSyncHint] = useState<string | null>(null);
   const hintTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -124,20 +136,44 @@ export default function WatchPartyPage() {
 
   const host = partyHost(members);
   const amHost = Boolean(identity && host?.id === identity.id);
+  // The host can lock playback to themselves. Their own switch is local
+  // state (Presence is slow to echo); everyone else reads it off the host.
+  const [lockPlayback, setLockPlayback] = useState(false);
+  const lockRef = useRef(false);
+  const hostOnly = amHost ? lockPlayback : Boolean(host?.hostOnly);
   // For the sync callbacks, which outlive any one render.
   const membersRef = useRef<PartyMember[]>([]);
   const amHostRef = useRef(false);
+  const hostOnlyRef = useRef(false);
   useEffect(() => {
     membersRef.current = members;
     amHostRef.current = amHost;
-  }, [members, amHost]);
+    hostOnlyRef.current = hostOnly;
+  }, [members, amHost, hostOnly]);
 
-  // The creator's tab knows the title; everyone else learns it from
-  // whoever's present (the host's copy first).
+  // The host picks what's on. The creator's tab knows the title, and the
+  // host's later episode changes are kept here; everyone else follows the
+  // host's copy — and, until Presence catches up, the host's latest
+  // episode broadcast.
   const startedTitle = useMemo(() => (isClient ? getStartedTitle(code) : null), [isClient, code]);
-  const title =
-    startedTitle ?? partyHost(members.filter((m) => m.title))?.title ?? null;
+  const [changedTitle, setChangedTitle] = useState<PartyTitle | null>(null);
+  const [liveEpisode, setLiveEpisode] = useState<(EpisodeRef & { by: string }) | null>(null);
+  const myTitle = changedTitle ?? startedTitle;
+  const carrier = partyHost(members.filter((m) => m.title));
+  let title: PartyTitle | null = null;
+  if (amHost || !carrier?.title) {
+    title = myTitle ?? carrier?.title ?? null;
+  } else {
+    title = carrier.title;
+    if (title.mediaType === 'tv' && liveEpisode && liveEpisode.by === host?.id) {
+      title = { ...title, season: liveEpisode.season, episode: liveEpisode.episode };
+    }
+  }
   const titleKey = title ? JSON.stringify(title) : null;
+  const episodeKey =
+    title?.mediaType === 'tv' ? `${title.mediaId}:${title.season ?? 1}:${title.episode ?? 1}` : null;
+
+  const [reactions, setReactions] = useState<FloatingReaction[]>([]);
 
   const flashHint = useCallback((text: string, ms = 5000) => {
     setSyncHint(text);
@@ -150,10 +186,11 @@ export default function WatchPartyPage() {
   useEffect(() => {
     if (!identity || !code) return;
     let sync: PartySync | null = null;
+    const reactionTimers = new Set<ReturnType<typeof setTimeout>>();
 
     const connection = joinParty(
       code,
-      { ...identity, joinedAt: Date.now(), title: getStartedTitle(code) },
+      { ...identity, joinedAt: Date.now(), title: getStartedTitle(code), hostOnly: lockRef.current },
       {
         onMembers: setMembers,
         onChat: (message) => setMessages((prev) => [...prev, message].slice(-200)),
@@ -161,6 +198,26 @@ export default function WatchPartyPage() {
         onCountdown: setStartsAt,
         onSync: (message) => {
           if (sync && isPartyMessage(message)) sync.handleRemote(message);
+        },
+        onEpisode: (change) => {
+          const host = partyHost(membersRef.current);
+          if (change.by !== host?.id) return;
+          setLiveEpisode(change);
+          flashHint(`${host.name} moved the party to S${change.season} · E${change.episode}`);
+        },
+        onReaction: (reaction) => {
+          const floating: FloatingReaction = {
+            id: reaction.id,
+            emoji: reaction.emoji,
+            name: reaction.by === identity.id ? 'You' : reaction.name,
+            x: 8 + Math.random() * 80,
+          };
+          setReactions((prev) => [...prev, floating].slice(-30));
+          const t = setTimeout(() => {
+            reactionTimers.delete(t);
+            setReactions((prev) => prev.filter((r) => r.id !== floating.id));
+          }, REACTION_MS);
+          reactionTimers.add(t);
         },
       }
     );
@@ -181,6 +238,8 @@ export default function WatchPartyPage() {
             state.cause === 'pause' ? 'paused at' : state.cause === 'seeked' ? 'jumped to' : 'pressed play at';
           flashHint(`${name} ${did} ${formatTimestamp(state.time)}`);
         },
+        canControl: () => amHostRef.current || !hostOnlyRef.current,
+        onBlocked: () => flashHint('Only the host controls playback in this party'),
       });
       sync = partySync;
       stopListening = desktopPlayer.onState((state) => {
@@ -193,6 +252,7 @@ export default function WatchPartyPage() {
     return () => {
       clearTimeout(emptyTimer);
       clearInterval(ticker);
+      reactionTimers.forEach(clearTimeout);
       stopListening();
       connection.leave();
       connectionRef.current = null;
@@ -226,6 +286,7 @@ export default function WatchPartyPage() {
         position: measured.watched,
         duration: measured.duration,
         positionSource: 'measured',
+        episodeKey: measured.episodeKey,
       });
     }, 5000);
     return () => clearInterval(t);
@@ -243,6 +304,55 @@ export default function WatchPartyPage() {
     }, delay);
     return () => clearTimeout(t);
   }, [startsAt, amHost, desktopPlayer]);
+
+  // The host's next episode, looked up ahead of time for "Up next".
+  const [upNext, setUpNext] = useState<{ key: string; next: EpisodeRef | null } | null>(null);
+  useEffect(() => {
+    if (!episodeKey || !amHost) return;
+    const [showId, season, episode] = episodeKey.split(':');
+    let cancelled = false;
+    adjacentEpisode(showId, { season: Number(season), episode: Number(episode) }, 1).then((next) => {
+      if (!cancelled) setUpNext({ key: episodeKey, next });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [episodeKey, amHost]);
+  const nextEpisode = upNext?.key === episodeKey ? upNext.next : null;
+  const atLastEpisode = upNext?.key === episodeKey && upNext.next === null;
+
+  /** Host only: everyone's player moves to this episode. */
+  const changeEpisode = (to: EpisodeRef) => {
+    if (!title || title.mediaType !== 'tv') return;
+    const next: PartyTitle = { ...title, season: to.season, episode: to.episode };
+    setChangedTitle(next);
+    rememberTitle(code, next);
+    // Presence (the title effect above) takes a few seconds to reach
+    // everyone; the broadcast switches them now.
+    connectionRef.current?.episode(to.season, to.episode);
+    myPosition.current = null;
+    flashHint(`Moved the party to S${to.season} · E${to.episode}`);
+  };
+
+  const [stepping, setStepping] = useState(false);
+  const stepEpisode = async (direction: 1 | -1) => {
+    if (!title || title.mediaType !== 'tv') return;
+    setStepping(true);
+    try {
+      const to = await adjacentEpisode(title.mediaId, { season: title.season ?? 1, episode: title.episode ?? 1 }, direction);
+      if (to) changeEpisode(to);
+      else flashHint(direction === 1 ? "That's the last episode" : "That's the first episode");
+    } finally {
+      setStepping(false);
+    }
+  };
+
+  const toggleLock = () => {
+    const on = !lockPlayback;
+    setLockPlayback(on);
+    lockRef.current = on;
+    connectionRef.current?.setHostOnly(on);
+  };
 
   const copyLink = async () => {
     try {
@@ -379,15 +489,89 @@ export default function WatchPartyPage() {
               title={title.title}
               posterPath={title.posterPath ?? undefined}
               onProgress={(p) => {
-                myPosition.current = p;
+                myPosition.current = { ...p, episodeKey };
               }}
+              overlay={
+                <>
+                  <ReactionsOverlay reactions={reactions} />
+                  {/* Only the host's player moves the party on; everyone
+                      else follows the episode change. */}
+                  {amHost && nextEpisode && episodeKey && (
+                    <UpNextCard key={episodeKey} next={nextEpisode} onPlayNext={() => changeEpisode(nextEpisode)} />
+                  )}
+                </>
+              }
             />
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <ReactionBar onReact={(emoji) => connectionRef.current?.react(emoji)} />
+              {title.mediaType === 'tv' &&
+                (amHost ? (
+                  <div className="flex items-center gap-1 rounded-xl bg-white/[0.03] border border-white/5 p-1">
+                    <button
+                      onClick={() => stepEpisode(-1)}
+                      disabled={stepping || ((title.season ?? 1) <= 1 && (title.episode ?? 1) <= 1)}
+                      className="p-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:hover:bg-transparent transition-all"
+                      aria-label="Previous episode"
+                    >
+                      <ChevronLeft size={16} />
+                    </button>
+                    <span className="px-2 text-xs font-bold text-white tabular-nums">
+                      S{title.season ?? 1} · E{title.episode ?? 1}
+                    </span>
+                    <button
+                      onClick={() => stepEpisode(1)}
+                      disabled={stepping || atLastEpisode}
+                      className="p-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:hover:bg-transparent transition-all"
+                      aria-label="Next episode"
+                    >
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-muted">
+                    <span className="font-bold text-white tabular-nums">
+                      S{title.season ?? 1} · E{title.episode ?? 1}
+                    </span>{' '}
+                    · the host picks episodes
+                  </p>
+                ))}
+            </div>
 
             <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/5 space-y-3">
               <p className="flex items-center gap-2 text-[11px] text-muted leading-relaxed">
                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${streamReady ? 'bg-accent' : 'bg-white/30'}`} />
-                <span>Synced playback — play, pause or skip in your player and everyone follows.</span>
+                <span>
+                  {hostOnly && !amHost
+                    ? 'Synced playback — the host plays, pauses and skips for everyone.'
+                    : 'Synced playback — play, pause or skip in your player and everyone follows.'}
+                </span>
               </p>
+              {amHost ? (
+                <button
+                  onClick={toggleLock}
+                  role="switch"
+                  aria-checked={lockPlayback}
+                  className="flex items-center gap-2.5 text-[11px] text-muted hover:text-white transition-colors"
+                >
+                  <span
+                    className={`relative w-7 h-4 rounded-full transition-colors ${lockPlayback ? 'bg-accent' : 'bg-white/15'}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${lockPlayback ? 'left-3.5' : 'left-0.5'}`}
+                    />
+                  </span>
+                  {lockPlayback ? <Lock size={12} /> : <LockOpen size={12} />}
+                  <span>Only I control playback</span>
+                </button>
+              ) : (
+                hostOnly && (
+                  <p className="flex items-center gap-2 text-[11px] text-muted">
+                    <Lock size={12} className="text-accent" />
+                    <span>Playback is locked to {host?.name ?? 'the host'} — pausing or skipping snaps you back to the room.</span>
+                  </p>
+                )
+              )}
               {!streamReady && (
                 <p className="text-[11px] text-yellow-500/80 leading-relaxed">
                   Press play in the player once to load your stream — you&apos;ll jump to
@@ -408,6 +592,7 @@ export default function WatchPartyPage() {
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                   <span>{copied ? 'Copied' : 'Copy'}</span>
                 </button>
+                {user && <InviteFriendsButton code={code} title={title} />}
                 {amHost && (
                   <button
                     onClick={() => connectionRef.current?.countdown(5)}
@@ -433,9 +618,13 @@ export default function WatchPartyPage() {
               <div className="space-y-2">
                 {members.map((m) => {
                   const isMe = m.id === identity.id;
-                  const drift = (m.position ?? 0) - (me?.position ?? 0);
+                  // Only positions in the episode on screen compare; anything
+                  // else is from before an episode change.
+                  const theirs = m.episodeKey === episodeKey ? m.position : null;
+                  const mine = me?.episodeKey === episodeKey ? me.position : null;
+                  const drift = (theirs ?? 0) - (mine ?? 0);
                   const offBy = Math.abs(drift);
-                  const known = m.position !== null || isMe;
+                  const known = isMe || (theirs !== null && mine !== null);
                   const avatar = { username: m.name, display_name: m.name, avatar_url: m.avatarUrl };
 
                   return (
@@ -454,7 +643,9 @@ export default function WatchPartyPage() {
                         <p className="flex items-center gap-1 text-[10px] text-muted">
                           <span>
                             {!known
-                              ? 'no position yet'
+                              ? theirs === null
+                                ? 'no position yet'
+                                : 'press play to compare'
                               : isMe
                               ? 'reference'
                               : offBy <= DRIFT_TOLERANCE_SECONDS

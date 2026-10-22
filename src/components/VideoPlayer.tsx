@@ -1,13 +1,14 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Loader2, RefreshCw, Server, PlayCircle, Video as VideoIcon, Film, Tv, Play, Lightbulb, LightbulbOff, Rows2, Maximize } from 'lucide-react';
+import { Loader2, RefreshCw, Server, PlayCircle, Video as VideoIcon, Film, Tv, Play, Lightbulb, LightbulbOff, Rows2, Maximize, PictureInPicture2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from './AuthProvider';
 import { supabase } from '@/lib/supabase';
 import { upsertNowWatching, clearNowWatching, HEARTBEAT_MS } from '@/lib/presence';
-import { getDesktopPlayer } from '@/lib/desktopPlayer';
+import { getDesktopPlayer, type PlayerCommand } from '@/lib/desktopPlayer';
+import { formatTimestamp } from '@/lib/watchRoom';
 import Image from 'next/image';
 
 interface VideoPlayerProps {
@@ -22,12 +23,26 @@ interface VideoPlayerProps {
   /** Rendered in the toolbar where the mode toggle used to be. */
   controls?: React.ReactNode;
   onProgress?: (position: { watched: number; duration: number }) => void;
-  /**
-   * Start on a specific provider by name. Watch rooms use this to prefer
-   * videasy, the only provider that reports playback progress.
-   */
+  /** Start on a specific provider by name. */
   preferredProvider?: string;
+  /** Seconds to pick up from once the stream loads (ignored near either end). */
+  resumeAt?: number;
+  /**
+   * Drawn over the video, inside the player — so it shows in theater mode
+   * and fullscreen too. Not clickable unless its own elements opt in with
+   * `pointer-events-auto`.
+   */
+  overlay?: React.ReactNode;
 }
+
+interface Notice {
+  text: string;
+  action?: { label: string; run: () => void };
+}
+
+// After the viewer clicks into the player, how long a server gets to start a
+// stream before the next one is tried.
+const START_TIMEOUT_MS = 20000;
 
 interface Provider {
   name: string;
@@ -125,7 +140,9 @@ const VideoPlayer = ({
   videos = [],
   controls,
   onProgress,
-  preferredProvider
+  preferredProvider,
+  resumeAt,
+  overlay,
 }: VideoPlayerProps) => {
   const { user } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
@@ -357,6 +374,154 @@ const VideoPlayer = ({
     });
   }, [onProgress]);
 
+  // ---- What the bridge makes possible ------------------------------------
+  // Picking another server when this one can't play the title, resuming,
+  // keyboard shortcuts and the mini player. All of it needs the bridge, so
+  // under `npm run dev` in a browser none of it runs.
+
+  const [desktopPlayer] = useState(getDesktopPlayer);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const showNotice = useCallback((next: Notice, ms = 7000) => {
+    setNotice(next);
+    clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), ms);
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    const el = playerRef.current;
+    if (!el) return;
+    // The provider's own in-frame fullscreen button is unreliable — it's
+    // third-party, cross-origin UI we don't control, and varies (or breaks)
+    // per provider. This fullscreens our own wrapper instead, which always
+    // works.
+    if (document.fullscreenElement) document.exitFullscreen();
+    else el.requestFullscreen();
+  }, []);
+
+  // One "load" is one server showing one title/episode. Whether its stream
+  // has appeared decides whether a problem report means anything.
+  const loadKey = `${activeProvider.name}|${type}|${id}|${season}|${episode}`;
+  const load = useRef({ at: 0, streamSeen: false, resumed: false, startTimer: undefined as ReturnType<typeof setTimeout> | undefined });
+  // Servers already tried for this title, so automatic switching can't loop.
+  const tried = useRef({ title: '', names: new Set<string>() });
+  const activeRef = useRef(activeProvider);
+  const resumeRef = useRef(resumeAt);
+  useEffect(() => {
+    activeRef.current = activeProvider;
+    resumeRef.current = resumeAt;
+  }, [activeProvider, resumeAt]);
+
+  useEffect(() => {
+    clearTimeout(load.current.startTimer);
+    load.current = { at: Date.now(), streamSeen: false, resumed: false, startTimer: undefined };
+    const titleKey = loadKey.slice(loadKey.indexOf('|') + 1);
+    if (tried.current.title !== titleKey) tried.current = { title: titleKey, names: new Set() };
+    tried.current.names.add(loadKey.slice(0, loadKey.indexOf('|')));
+  }, [loadKey]);
+
+  const switchServer = useCallback(
+    (why: string) => {
+      const current = activeRef.current;
+      const next = PROVIDERS.find((p) => !tried.current.names.has(p.name));
+      if (!next) {
+        showNotice({ text: 'No server could play this right now — pick one below, or try again later.' }, 12000);
+        return;
+      }
+      setIsLoading(true);
+      setActiveProvider(next);
+      showNotice({ text: `${current.name} ${why} — switched to ${next.name}.` });
+    },
+    [showNotice]
+  );
+
+  useEffect(() => {
+    if (!desktopPlayer) return;
+    const stopState = desktopPlayer.onState((state) => {
+      const current = load.current;
+      if (!state) {
+        current.streamSeen = false;
+        return;
+      }
+      if (!current.streamSeen) {
+        current.streamSeen = true;
+        clearTimeout(current.startTimer);
+      }
+      // Once per load, as soon as the stream knows its length.
+      const resume = resumeRef.current;
+      if (!current.resumed && state.duration > 0) {
+        current.resumed = true;
+        if (resume && resume > 30 && resume < state.duration - 60 && Math.abs(state.time - resume) > 10) {
+          desktopPlayer.command({ action: 'seek', time: resume });
+          showNotice({
+            text: `Resumed at ${formatTimestamp(resume)}`,
+            action: { label: 'Start over', run: () => desktopPlayer.command({ action: 'seek', time: 0 }) },
+          });
+        }
+      }
+    });
+    const stopProblem = desktopPlayer.onProblem(() => {
+      const current = load.current;
+      // Stragglers from the page we just switched away from don't count.
+      if (current.streamSeen || Date.now() - current.at < 1500) return;
+      switchServer("couldn't play this");
+    });
+    const stopShortcut = desktopPlayer.onShortcut(({ key }) => {
+      if (key === 'f') toggleFullscreen();
+    });
+    return () => {
+      stopState();
+      stopProblem();
+      stopShortcut();
+    };
+  }, [desktopPlayer, showNotice, switchServer, toggleFullscreen]);
+
+  // A click into the player (the window loses focus to its frame) is almost
+  // always "play". If no stream follows, the server isn't going to deliver.
+  useEffect(() => {
+    if (!desktopPlayer) return;
+    const onBlur = () =>
+      setTimeout(() => {
+        const current = load.current;
+        if (document.activeElement !== iframeRef.current || current.streamSeen || current.startTimer) return;
+        current.startTimer = setTimeout(() => {
+          if (load.current === current && !current.streamSeen) switchServer("didn't start");
+        }, START_TIMEOUT_MS);
+      }, 0);
+    window.addEventListener('blur', onBlur);
+    return () => window.removeEventListener('blur', onBlur);
+  }, [desktopPlayer, switchServer]);
+
+  // Shortcuts while focus is on the page. (Inside the player they're handled
+  // by the bridge itself — see forwardShortcuts in electron/preload.js.)
+  useEffect(() => {
+    if (!desktopPlayer) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+      const target = e.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(target.tagName))) return;
+      const key = e.key.toLowerCase();
+      if (key === 'f') {
+        e.preventDefault();
+        toggleFullscreen();
+        return;
+      }
+      // Nothing to control until a stream is playing.
+      if (!load.current.streamSeen) return;
+      let command: PlayerCommand | null = null;
+      if (key === ' ' || key === 'k') command = { action: 'toggle' };
+      else if (key === 'arrowleft' || key === 'j') command = { action: 'seekBy', delta: -10 };
+      else if (key === 'arrowright' || key === 'l') command = { action: 'seekBy', delta: 10 };
+      else if (key === 'm') command = { action: 'toggleMute' };
+      else if (key === 'p') command = { action: 'pip' };
+      if (!command) return;
+      e.preventDefault();
+      desktopPlayer.command(command);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [desktopPlayer, toggleFullscreen]);
+
   // If a provider fails to load (dead domain, blocked request), the iframe's
   // onLoad never fires — clear the spinner so the user can switch servers.
   useEffect(() => {
@@ -450,6 +615,33 @@ const VideoPlayer = ({
                   onLoad={() => setIsLoading(false)}
                   frameBorder="0"
                 />
+
+                {overlay && <div className="absolute inset-0 z-20 pointer-events-none">{overlay}</div>}
+
+                {/* Server switches and resume, said where you're looking. */}
+                <AnimatePresence>
+                  {notice && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      className="absolute top-4 left-4 z-30 max-w-[70%] flex items-center gap-3 px-3.5 py-2 rounded-xl bg-black/75 backdrop-blur-md border border-white/10 text-xs text-white/90 shadow-xl"
+                    >
+                      <span>{notice.text}</span>
+                      {notice.action && (
+                        <button
+                          onClick={() => {
+                            notice.action?.run();
+                            setNotice(null);
+                          }}
+                          className="shrink-0 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-bold text-white transition-colors"
+                        >
+                          {notice.action.label}
+                        </button>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
 
               {genZMode && (
@@ -484,19 +676,19 @@ const VideoPlayer = ({
               >
                 <Rows2 size={18} />
               </button>
+              {desktopPlayer && (
+                <button
+                  onClick={() => desktopPlayer.command({ action: 'pip' })}
+                  className="p-2 bg-black/60 backdrop-blur-md rounded-full text-white/70 hover:text-white transition-colors border border-white/10"
+                  title="Mini player (P) — keep watching in a small window on top"
+                >
+                  <PictureInPicture2 size={18} />
+                </button>
+              )}
               <button
-                onClick={() => {
-                  const el = playerRef.current;
-                  if (!el) return;
-                  // The provider's own in-frame fullscreen button is
-                  // unreliable — it's third-party, cross-origin UI we don't
-                  // control, and varies (or breaks) per provider. This
-                  // fullscreens our own wrapper instead, which always works.
-                  if (document.fullscreenElement) document.exitFullscreen();
-                  else el.requestFullscreen();
-                }}
+                onClick={toggleFullscreen}
                 className="p-2 bg-black/60 backdrop-blur-md rounded-full text-white/70 hover:text-white transition-colors border border-white/10"
-                title="Fullscreen"
+                title="Fullscreen (F)"
               >
                 <Maximize size={18} />
               </button>

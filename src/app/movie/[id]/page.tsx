@@ -3,7 +3,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { getMovieDetails, getCollection } from '@/lib/tmdb';
 import { getImageUrl } from '@/lib/imageUrl';
-import VideoPlayer from '@/components/VideoPlayer';
+import MoviePlayer from '@/components/MoviePlayer';
 import MovieCard from '@/components/MovieCard';
 import FranchiseRow from '@/components/FranchiseRow';
 import { Star, Clock, Calendar, Users, Bookmark, Play, Layers } from 'lucide-react';
@@ -56,8 +56,7 @@ export default async function MoviePage({ params }: { params: Promise<{ id: stri
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
           {/* Left Column: Player and Details */}
           <div className="lg:col-span-2 space-y-8">
-            <VideoPlayer 
-              type="movie" 
+            <MoviePlayer
               id={id} 
               imdbId={movie.imdb_id} 
               title={movie.title}

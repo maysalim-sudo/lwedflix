@@ -6,6 +6,7 @@ import Image from 'next/image';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSearchParams, usePathname } from 'next/navigation';
 import VideoPlayer from './VideoPlayer';
+import UpNextCard from './UpNextCard';
 import { useAuth } from './AuthProvider';
 import MovieCard from './MovieCard';
 import {
@@ -225,6 +226,12 @@ const TVPlayerContainer = ({ show }: TVPlayerContainerProps) => {
     if (nextEpisode) selectEpisode(nextEpisode.season, nextEpisode.episode);
   };
 
+  // Pick an unfinished episode up where it was left; a finished one (or one
+  // barely started) plays from the top.
+  const saved = positions[`${activeSeason}-${activeEpisode}`];
+  const resumeAt =
+    saved && saved.duration > 0 && saved.watched / saved.duration < 0.9 ? saved.watched : undefined;
+
   const episodeControls = (
     <>
       <button
@@ -275,17 +282,32 @@ const TVPlayerContainer = ({ show }: TVPlayerContainerProps) => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
         {/* Left Column: Player and Details */}
         <div className="lg:col-span-2 space-y-8">
-          <VideoPlayer 
-            type="tv" 
-            id={show.id} 
-            imdbId={show.external_ids?.imdb_id} 
-            season={activeSeason} 
-            episode={activeEpisode} 
+          <VideoPlayer
+            type="tv"
+            id={show.id}
+            imdbId={show.external_ids?.imdb_id}
+            season={activeSeason}
+            episode={activeEpisode}
             title={show.name}
             posterPath={show.poster_path}
             videos={show.videos.results}
             onProgress={handleProgress}
             controls={episodeControls}
+            resumeAt={resumeAt}
+            overlay={
+              nextEpisode && (
+                <UpNextCard
+                  key={`${activeSeason}-${activeEpisode}`}
+                  next={nextEpisode}
+                  name={
+                    nextEpisode.season === activeSeason
+                      ? seasonEpisodes.find((e) => e.episode_number === nextEpisode.episode)?.name
+                      : undefined
+                  }
+                  onPlayNext={goToNextEpisode}
+                />
+              )
+            }
           />
           
           <div className="space-y-6">

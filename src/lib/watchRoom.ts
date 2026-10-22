@@ -40,6 +40,8 @@ export interface PartyPresence {
   avatarUrl: string | null;
   joinedAt: number;
   title: PartyTitle | null;
+  /** Only meaningful on the host: playback is locked to the host. */
+  hostOnly: boolean;
 }
 
 /** Where a member's player is, shared by Broadcast every few seconds. */
@@ -52,6 +54,11 @@ export interface PartyPosition {
    * a shared start — right until someone pauses, seeks or buffers.
    */
   positionSource: PositionSource;
+  /**
+   * The episode the position is in (any key that changes with it); null for
+   * movies. Positions from different episodes can't be compared.
+   */
+  episodeKey: string | null;
 }
 
 export interface PartyMember extends PartyPresence {
@@ -59,6 +66,7 @@ export interface PartyMember extends PartyPresence {
   position: number | null;
   duration: number | null;
   positionSource: PositionSource;
+  episodeKey: string | null;
 }
 
 export interface PartyChatMessage {
@@ -73,6 +81,10 @@ export interface PartyChatMessage {
 
 /** Position reports below this gap aren't worth flagging as drift. */
 export const DRIFT_TOLERANCE_SECONDS = 5;
+
+/** What can be thrown at the screen during a party. */
+export const REACTIONS = ['😂', '😮', '😍', '🔥', '👏', '😭'] as const;
+export type Reaction = (typeof REACTIONS)[number];
 
 const MAX_CHAT_LENGTH = 500;
 const MAX_NAME_LENGTH = 30;
@@ -96,6 +108,12 @@ const startedKey = (code: string) => `lwedflix-party:${code}`;
  */
 export function startParty(title: PartyTitle): string {
   const code = makeCode();
+  rememberTitle(code, title);
+  return code;
+}
+
+/** What this tab is showing in the party — kept across reloads (the host's episode changes too). */
+export function rememberTitle(code: string, title: PartyTitle) {
   try {
     sessionStorage.setItem(startedKey(code), JSON.stringify(title));
   } catch {
@@ -103,7 +121,6 @@ export function startParty(title: PartyTitle): string {
     // title — but the creator is usually alone, so this is worth knowing.
     console.warn('Could not remember the watch party title for this tab.');
   }
-  return code;
 }
 
 /** The title this tab started the party with, if it did. */
@@ -166,11 +183,23 @@ export interface PartyHandlers {
   onCountdown(startsAt: number): void;
   /** Playback sync traffic for partySync.ts; validate before use. */
   onSync(message: unknown): void;
+  /** Someone (check it's the host) moved the party to another episode. */
+  onEpisode?(change: { by: string; season: number; episode: number }): void;
+  /** Includes your own, so everyone's screen shows the same thing. */
+  onReaction?(reaction: { id: string; by: string; name: string; emoji: Reaction }): void;
 }
 
 export interface PartyConnection {
-  /** For members who learned the title from the room, so they carry it too. */
+  /**
+   * What this member is showing, carried so the room outlives whoever started
+   * it — and, from the host, which episode the party is on.
+   */
   setTitle(title: PartyTitle): void;
+  /** Host only: lock playback to the host, or unlock it. */
+  setHostOnly(on: boolean): void;
+  /** Host only: tell everyone right away (presence follows, more slowly). */
+  episode(season: number, episode: number): void;
+  react(emoji: Reaction): void;
   /** Call every few seconds; goes out by Broadcast, not Presence. */
   reportPosition(position: PartyPosition): void;
   chat(body: string): void;
@@ -192,6 +221,32 @@ export function joinParty(code: string, me: PartyPresence, handlers: PartyHandle
   });
   let presence = me;
   let subscribed = false;
+  // Realtime closes the channel of a client that sends more than 5 Presence
+  // updates in 30 seconds. Changes are coalesced so that never happens: the
+  // first goes out at once, anything within the next few seconds waits and
+  // goes out as one.
+  const PRESENCE_GAP_MS = 6500;
+  let lastTrack = 0;
+  let trackTimer: ReturnType<typeof setTimeout> | undefined;
+  // Realtime keeps every presence a client has tracked under its key, not
+  // just the latest, so each carries a revision and readers take the newest.
+  let revision = 0;
+  const sendPresence = () => {
+    lastTrack = Date.now();
+    channel.track({ ...presence, rev: ++revision });
+  };
+  const track = () => {
+    if (!subscribed) return; // sent on subscribe
+    const wait = lastTrack + PRESENCE_GAP_MS - Date.now();
+    if (wait > 0) {
+      trackTimer ??= setTimeout(() => {
+        trackTimer = undefined;
+        track();
+      }, wait);
+      return;
+    }
+    sendPresence();
+  };
   let history: PartyChatMessage[] = [];
   const positions = new Map<string, PartyPosition>();
 
@@ -199,9 +254,9 @@ export function joinParty(code: string, me: PartyPresence, handlers: PartyHandle
   // back is checked rather than trusted.
   const members = (): PartyMember[] =>
     Object.values(channel.presenceState())
-      .map((entries) => sanitizePresence(entries[0]))
+      .map((entries) => sanitizePresence(newestPresence(entries)))
       .filter((m): m is PartyPresence => m !== null)
-      .map((m) => ({ position: null, duration: null, positionSource: 'estimated', ...positions.get(m.id), ...m }));
+      .map((m) => ({ position: null, duration: null, positionSource: 'estimated', episodeKey: null, ...positions.get(m.id), ...m }));
 
   const remember = (message: PartyChatMessage) => {
     history = [...history, message].slice(-HISTORY_SIZE);
@@ -242,10 +297,20 @@ export function joinParty(code: string, me: PartyPresence, handlers: PartyHandle
       handlers.onMembers(members());
     })
     .on('broadcast', { event: 'sync' }, ({ payload }) => handlers.onSync(payload))
+    .on('broadcast', { event: 'episode' }, ({ payload }) => {
+      const by = str(payload?.by, 80);
+      const season = int(payload?.season);
+      const episode = int(payload?.episode);
+      if (by && season !== null && episode !== null && episode > 0) handlers.onEpisode?.({ by, season, episode });
+    })
+    .on('broadcast', { event: 'reaction' }, ({ payload }) => {
+      const reaction = sanitizeReaction(payload);
+      if (reaction) handlers.onReaction?.(reaction);
+    })
     .subscribe((status) => {
       if (status !== 'SUBSCRIBED') return;
       subscribed = true;
-      channel.track(presence);
+      sendPresence();
     });
 
   const broadcast = (event: string, payload: unknown) => {
@@ -257,7 +322,20 @@ export function joinParty(code: string, me: PartyPresence, handlers: PartyHandle
       // Each track counts toward the Presence limit; skip no-ops.
       if (JSON.stringify(title) === JSON.stringify(presence.title)) return;
       presence = { ...presence, title };
-      if (subscribed) channel.track(presence);
+      track();
+    },
+    setHostOnly(on) {
+      if (presence.hostOnly === on) return;
+      presence = { ...presence, hostOnly: on };
+      track();
+    },
+    episode(season, episode) {
+      broadcast('episode', { by: presence.id, season, episode });
+    },
+    react(emoji) {
+      const reaction = { id: crypto.randomUUID(), by: presence.id, name: presence.name, emoji };
+      handlers.onReaction?.(reaction);
+      broadcast('reaction', reaction);
     },
     reportPosition(position) {
       positions.set(presence.id, position);
@@ -289,6 +367,7 @@ export function joinParty(code: string, me: PartyPresence, handlers: PartyHandle
       broadcast('sync', message);
     },
     leave() {
+      clearTimeout(trackTimer);
       channel.untrack();
       supabase.removeChannel(channel);
     },
@@ -321,6 +400,15 @@ function sanitizeTitle(v: unknown): PartyTitle | null {
   };
 }
 
+/** The latest of a member's tracked presences (see `revision` in joinParty). */
+function newestPresence(entries: unknown[]): unknown {
+  const rev = (v: unknown) => {
+    const r = (v as { rev?: unknown } | null)?.rev;
+    return typeof r === 'number' && Number.isFinite(r) ? r : -1;
+  };
+  return entries.reduce((newest, entry) => (rev(entry) >= rev(newest) ? entry : newest), entries[0]);
+}
+
 function sanitizePresence(v: unknown): PartyPresence | null {
   if (!v || typeof v !== 'object') return null;
   const m = v as Record<string, unknown>;
@@ -335,7 +423,18 @@ function sanitizePresence(v: unknown): PartyPresence | null {
     avatarUrl: typeof m.avatarUrl === 'string' && /^https:\/\//.test(m.avatarUrl) ? m.avatarUrl : null,
     joinedAt,
     title: sanitizeTitle(m.title),
+    hostOnly: m.hostOnly === true,
   };
+}
+
+function sanitizeReaction(v: unknown): { id: string; by: string; name: string; emoji: Reaction } | null {
+  if (!v || typeof v !== 'object') return null;
+  const m = v as Record<string, unknown>;
+  const id = str(m.id, 80);
+  const by = str(m.by, 80);
+  const name = str(m.name, MAX_NAME_LENGTH);
+  const emoji = (REACTIONS as readonly unknown[]).includes(m.emoji) ? (m.emoji as Reaction) : null;
+  return id && by && name && emoji ? { id, by, name, emoji } : null;
 }
 
 function sanitizePosition(v: unknown): PartyPosition | null {
@@ -347,6 +446,7 @@ function sanitizePosition(v: unknown): PartyPosition | null {
     position,
     duration: num(m.duration),
     positionSource: m.positionSource === 'measured' ? 'measured' : 'estimated',
+    episodeKey: str(m.episodeKey, 60),
   };
 }
 

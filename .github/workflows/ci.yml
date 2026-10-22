@@ -1,0 +1,29 @@
+# Typecheck and unit tests on every push to main and every pull request.
+# (Lint isn't here yet: the code carried over from the website still has
+# errors to clear first. The end-to-end harnesses need a display, the
+# network and live providers, so they're run by hand — see the README.)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      # Unit tests don't start Electron.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test

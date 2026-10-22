@@ -8,6 +8,7 @@
 
 const { app, BrowserWindow, Menu, dialog, ipcMain, screen, session, shell, utilityProcess } = require('electron');
 const { autoUpdater } = require('electron-updater');
+const { installAdBlock } = require('./adblock');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
@@ -33,7 +34,19 @@ const PROTOCOL = 'lwedflix';
 const DEEP_LINK_PATH = /^\/(?:(?:movie|tv|person)\/\d{1,10}|(?:watch|invite|p|u|c)\/[\w.-]{1,64})$/;
 const DEEP_LINK_QUERY = /^(\?[\w=&-]{0,100})?$/;
 
-const PLAYER_EVENTS = new Set(['play', 'pause', 'seeked', 'timeupdate', 'loadedmetadata']);
+const PLAYER_EVENTS = new Set(['play', 'pause', 'seeked', 'timeupdate', 'loadedmetadata', 'ended']);
+const PLAYER_ACTIONS = new Set(['play', 'pause', 'toggle', 'toggleMute']);
+
+// Runs in the player frame's own world (where the provider's code lives), as
+// a user gesture — picture-in-picture refuses to start without one. The
+// preload tags the stream's <video> so this finds the right one.
+const PICTURE_IN_PICTURE = `(() => {
+  const video = document.querySelector('video[data-lwedflix-stream]');
+  if (!video) return 'no-video';
+  if (document.pictureInPictureElement) return document.exitPictureInPicture().then(() => 'exited');
+  video.disablePictureInPicture = false;
+  return video.requestPictureInPicture().then(() => 'entered', (err) => 'failed: ' + err.message);
+})()`;
 
 const isMac = process.platform === 'darwin';
 
@@ -159,11 +172,28 @@ async function start() {
   ipcMain.on('player:command', (event, command) => {
     if (!isFromAppPage(event) || !playerFrame || playerFrame.isDestroyed() || playerFrame.detached) return;
     const action = command?.action;
-    if (action === 'play' || action === 'pause') {
+    if (PLAYER_ACTIONS.has(action)) {
       playerFrame.send('player:command', { action });
     } else if (action === 'seek' && Number.isFinite(command.time) && command.time >= 0) {
       playerFrame.send('player:command', { action, time: command.time });
+    } else if (action === 'seekBy' && Number.isFinite(command.delta) && Math.abs(command.delta) <= 600) {
+      playerFrame.send('player:command', { action, delta: command.delta });
+    } else if (action === 'pip') {
+      playerFrame.executeJavaScript(PICTURE_IN_PICTURE, true).catch(() => {});
     }
+  });
+
+  // From inside the embedded players: a server that can't play the title,
+  // and shortcut keys pressed while focus is in the player.
+  const fromPlayerFrame = (event) =>
+    mainWindow && event.sender === mainWindow.webContents && event.senderFrame && event.senderFrame !== event.sender.mainFrame;
+  ipcMain.on('player:problem', (event, problem) => {
+    if (!fromPlayerFrame(event)) return;
+    const reason = problem?.reason === 'error' ? 'error' : 'unavailable';
+    mainWindow.webContents.send('player:problem', { reason });
+  });
+  ipcMain.on('player:key', (event, key) => {
+    if (fromPlayerFrame(event) && key === 'f') mainWindow.webContents.send('player:shortcut', { key });
   });
 
   createWindow();
@@ -258,6 +288,9 @@ function lockDownSession() {
   ses.setPermissionCheckHandler((_contents, permission, requestingOrigin) => {
     return permission === 'fullscreen' || (requestingOrigin === appOrigin && APP_PERMISSIONS.has(permission));
   });
+  // The players' ads: trackers, popunder scripts and the "download"
+  // prompts they throw up.
+  installAdBlock(ses);
 }
 
 async function launchServer() {

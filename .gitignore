@@ -21,3 +21,6 @@ next-env.d.ts
 .DS_Store
 *.pem
 npm-debug.log*
+
+# screenshots from the end-to-end harnesses
+/tests/e2e/output/
