@@ -10,7 +10,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pickZip, appBundlePath, whyNotReplaceable, download, startInstall } from '../electron/macUpdater.js';
+import { pickZip, appBundlePath, whyNotReplaceable, oldCopies, download, startInstall } from '../electron/macUpdater.js';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'lwedflix-update-'));
 
@@ -47,6 +47,18 @@ test('only a copy it can write to replaces itself', posixOnly, () => {
   assert.match(whyNotReplaceable('/Volumes/Lwedflix 1.2.0/Lwedflix.app') ?? '', /disk image/);
   assert.match(whyNotReplaceable(path.join(dir, 'Missing.app')) ?? '', /permission/);
   assert.match(whyNotReplaceable(null) ?? '', /bundle/);
+});
+
+test('finds old copies an install left behind', posixOnly, () => {
+  const dir = tmp();
+  for (const name of ['Lwedflix.app', '.Lwedflix.app.old-12', '.Lwedflix.app.old-345', 'Other.app', '.Other.app.old-1']) {
+    fs.mkdirSync(path.join(dir, name));
+  }
+  assert.deepEqual(
+    oldCopies(path.join(dir, 'Lwedflix.app')).map((p: string) => path.basename(p)).sort(),
+    ['.Lwedflix.app.old-12', '.Lwedflix.app.old-345']
+  );
+  assert.deepEqual(oldCopies(null), []);
 });
 
 test('downloads are checked against the release', async () => {

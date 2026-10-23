@@ -51,6 +51,18 @@ function whyNotReplaceable(bundle) {
   return null;
 }
 
+/** Earlier copies an install moved aside next to `bundle` (.Lwedflix.app.old-123). */
+function oldCopies(bundle) {
+  if (!bundle) return [];
+  const dir = path.dirname(bundle);
+  const prefix = `.${path.basename(bundle)}.old-`;
+  try {
+    return fs.readdirSync(dir).filter((entry) => entry.startsWith(prefix)).map((entry) => path.join(dir, entry));
+  } catch {
+    return [];
+  }
+}
+
 /** Streams `url` to `file`, checking it against the release's size and sha512 (base64). */
 async function download(fetchImpl, url, file, expected) {
   const res = await fetchImpl(url);
@@ -102,10 +114,13 @@ while kill -0 "$pid" 2>/dev/null; do
   waited=$((waited + 1))
   if [ "$waited" -gt 300 ]; then echo "failed: Lwedflix did not quit" > "$result"; exit 1; fi
 done
-backup="$current.old-$$"
+# Hidden, next to the app. A copy macOS approved through "Open Anyway" is
+# locked against changes: it can be renamed but not always deleted, and then
+# the next launch tries again (see oldCopies).
+backup="$(dirname "$current")/.$(basename "$current").old-$$"
 if mv "$current" "$backup" 2> "$result.err"; then
   if mv "$next" "$current" 2>> "$result.err"; then
-    rm -rf "$backup"
+    rm -rf "$backup" 2>/dev/null
     echo ok > "$result"
   else
     mv "$backup" "$current"
@@ -143,10 +158,18 @@ function createMacUpdater({ fetch, log, workDir, releasesUrl, execPath = process
   let ready = null;
   let installing = false;
 
-  // Leftovers from an earlier session: a download cut short, or the empty
-  // folder a finished install moved the app out of.
+  // Leftovers from an earlier session: a download cut short, the empty
+  // folder a finished install moved the app out of, and old copies the swap
+  // couldn't delete.
   for (const entry of fs.existsSync(workDir) ? fs.readdirSync(workDir) : []) {
     if (entry !== 'result.txt') fs.rmSync(path.join(workDir, entry), { recursive: true, force: true });
+  }
+  for (const old of oldCopies(bundle)) {
+    try {
+      fs.rmSync(old, { recursive: true, force: true });
+    } catch {
+      // Still locked; it's hidden, and tried again next launch.
+    }
   }
 
   return {
@@ -202,4 +225,4 @@ function createMacUpdater({ fetch, log, workDir, releasesUrl, execPath = process
   };
 }
 
-module.exports = { pickZip, appBundlePath, whyNotReplaceable, download, startInstall, createMacUpdater };
+module.exports = { pickZip, appBundlePath, whyNotReplaceable, oldCopies, download, startInstall, createMacUpdater };
