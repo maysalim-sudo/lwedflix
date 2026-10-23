@@ -14,6 +14,10 @@ import { pickZip, appBundlePath, whyNotReplaceable, download, startInstall } fro
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'lwedflix-update-'));
 
+// Paths and the swap script are macOS's (POSIX); CI also runs these tests
+// on Windows, where there's no /bin/sh.
+const posixOnly = { skip: process.platform === 'win32' && 'macOS paths and shell' };
+
 // What latest-mac.yml lists for a release.
 const FILES = [
   { url: 'Lwedflix-1.2.0-mac.zip', sha512: 'x64', size: 1 },
@@ -29,12 +33,12 @@ test("picks this Mac's zip", () => {
   assert.equal(pickZip(undefined, 'arm64'), null);
 });
 
-test('finds the app bundle from the executable', () => {
+test('finds the app bundle from the executable', posixOnly, () => {
   assert.equal(appBundlePath('/Applications/Lwedflix.app/Contents/MacOS/Lwedflix'), '/Applications/Lwedflix.app');
   assert.equal(appBundlePath('/usr/local/bin/electron'), null);
 });
 
-test('only a copy it can write to replaces itself', () => {
+test('only a copy it can write to replaces itself', posixOnly, () => {
   const dir = tmp();
   const bundle = path.join(dir, 'Lwedflix.app');
   fs.mkdirSync(bundle);
@@ -61,7 +65,7 @@ test('downloads are checked against the release', async () => {
 
 /** A process to stand in for the running app: the script waits for it to exit. */
 function fakeApp() {
-  const child = spawn('sleep', ['0.5']);
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 500)']);
   return child.pid!;
 }
 
@@ -73,7 +77,7 @@ async function waitFor(file: string) {
   throw new Error(`${file} never appeared`);
 }
 
-test('the swap waits for the app to quit, replaces it, and reopens it', async () => {
+test('the swap waits for the app to quit, replaces it, and reopens it', posixOnly, async () => {
   const dir = tmp();
   const current = path.join(dir, 'Lwedflix.app');
   const next = path.join(dir, 'staged', 'Lwedflix.app');
@@ -82,10 +86,11 @@ test('the swap waits for the app to quit, replaces it, and reopens it', async ()
   fs.mkdirSync(next, { recursive: true });
   fs.writeFileSync(path.join(next, 'version'), '1.2.0');
 
-  // `open` is looked up on PATH; this one records how it was called.
+  // `open` is looked up on PATH; this one records how it was called. (Not
+  // with echo: Linux's takes the leading -n as its own option.)
   const bin = path.join(dir, 'bin');
   fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, 'open'), `#!/bin/sh\necho "$@" > "${path.join(dir, 'opened')}"\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'open'), `#!/bin/sh\nprintf '%s\\n' "$*" > "${path.join(dir, 'opened')}"\n`, { mode: 0o755 });
   const savedPath = process.env.PATH;
   process.env.PATH = `${bin}:${savedPath}`;
   try {
@@ -101,7 +106,7 @@ test('the swap waits for the app to quit, replaces it, and reopens it', async ()
   }
 });
 
-test('a failed swap leaves the installed app as it was', async () => {
+test('a failed swap leaves the installed app as it was', posixOnly, async () => {
   const dir = tmp();
   const current = path.join(dir, 'Lwedflix.app');
   fs.mkdirSync(current);
