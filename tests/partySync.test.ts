@@ -18,7 +18,19 @@ class FakePlayer {
   }
 
   report(event: PlayerEvent) {
-    this.emit({ event, playing: this.playing, time: this.time, duration: this.duration });
+    this.emit({
+      event,
+      playing: this.playing,
+      time: this.time,
+      duration: this.duration,
+      muted: false,
+      volume: 1,
+      rate: 1,
+      buffered: this.time,
+      buffering: false,
+      tracks: [],
+      track: -1,
+    });
   }
 
   // What a person does in the player's own controls.

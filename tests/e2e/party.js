@@ -15,6 +15,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { installAdBlock } = require('../../electron/adblock');
+const { cleanState, cleanCommand } = require('../../electron/playerProtocol');
 
 const ROOT = path.join(__dirname, '..', '..');
 const SERVER_DIR = path.join(ROOT, 'server-bundle');
@@ -51,14 +52,17 @@ ipcMain.on('player:state', (event, state) => {
     event.sender.send('player:state', null);
     return;
   }
+  const clean = cleanState(state);
+  if (!clean) return;
   playerFrames.set(event.sender.id, frame);
-  const clean = { event: state.event, playing: Boolean(state.playing), time: Number(state.time) || 0, duration: Number(state.duration) || 0 };
   lastState.set(event.sender.id, clean);
   event.sender.send('player:state', clean);
 });
-ipcMain.on('player:command', (event, command) => {
+ipcMain.on('player:command', (event, raw) => {
   if (event.senderFrame !== event.sender.mainFrame) return;
-  playerFrames.get(event.sender.id)?.send('player:command', command);
+  const command = cleanCommand(raw);
+  // (The mini player needs main.js's user-gesture trick; not tested here.)
+  if (command && command.action !== 'pip') playerFrames.get(event.sender.id)?.send('player:command', command);
 });
 
 function makeWindow(partition) {
@@ -247,7 +251,7 @@ app.whenReady().then(async () => {
 
   // ---- Host-only lock --------------------------------------------------
 
-  await js(alice, `document.querySelector('button[role=switch]').click()`);
+  await js(alice, `[...document.querySelectorAll('button[role=switch]')].find((b) => b.textContent.includes('Only I control playback')).click()`);
   check(await waitFor(async () => (await text(bob)).includes('Playback is locked to Alice'), 'lock reaches bob', 15000), 'Alice locks playback → Bob is told');
   await inPlayer(bob, 'v.pause()');
   await sleep(3500);
@@ -256,7 +260,7 @@ app.whenReady().then(async () => {
   check(!a.paused, "Bob's pause doesn't reach Alice");
   check(!b.paused && Math.abs(a.t - b.t) < 2.5, 'Bob snaps back to the room');
   check((await text(bob)).includes('Only the host controls playback'), 'Bob is told why');
-  await js(alice, `document.querySelector('button[role=switch]').click()`);
+  await js(alice, `[...document.querySelectorAll('button[role=switch]')].find((b) => b.textContent.includes('Only I control playback')).click()`);
   check(await waitFor(async () => !(await text(bob)).includes('Playback is locked'), 'unlock reaches bob', 15000), 'Alice unlocks → Bob sees it');
 
   // ---- Up next and episode changes -------------------------------------

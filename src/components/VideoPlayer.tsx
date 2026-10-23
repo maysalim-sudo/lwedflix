@@ -2,7 +2,9 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Loader2, RefreshCw, Server, PlayCircle, Video as VideoIcon, Film, Tv, Play, Lightbulb, LightbulbOff, Rows2, Maximize, PictureInPicture2 } from 'lucide-react';
+import { Loader2, RefreshCw, Server, PlayCircle, Video as VideoIcon, Film, Tv, Play, Lightbulb, LightbulbOff, Rows2, Maximize, PictureInPicture2, SlidersHorizontal } from 'lucide-react';
+import PlayerControls from './PlayerControls';
+import { useControlsMode, setControlsMode } from '@/hooks/useControlsMode';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from './AuthProvider';
 import { supabase } from '@/lib/supabase';
@@ -33,6 +35,10 @@ interface VideoPlayerProps {
    * `pointer-events-auto`.
    */
   overlay?: React.ReactNode;
+  /** A "next episode" button in the player's controls. */
+  onNext?: () => void;
+  /** What's next, for that button's tooltip ("S1 E2"). */
+  nextLabel?: string;
 }
 
 interface Notice {
@@ -143,6 +149,8 @@ const VideoPlayer = ({
   preferredProvider,
   resumeAt,
   overlay,
+  onNext,
+  nextLabel,
 }: VideoPlayerProps) => {
   const { user } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
@@ -380,6 +388,12 @@ const VideoPlayer = ({
   // under `npm run dev` in a browser none of it runs.
 
   const [desktopPlayer] = useState(getDesktopPlayer);
+  // The app's own controls stand in for the server's once a stream plays
+  // (PlayerControls), unless the viewer chose the server's.
+  const controlsMode = useControlsMode();
+  const appControls = Boolean(desktopPlayer) && controlsMode === 'app';
+  const [controllingStream, setControllingStream] = useState(false);
+  const ourControls = appControls && controllingStream;
   const [notice, setNotice] = useState<Notice | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const showNotice = useCallback((next: Notice, ms = 7000) => {
@@ -549,6 +563,23 @@ const VideoPlayer = ({
     }
   };
 
+  const toggleGenZ = () => {
+    const enable = !genZMode;
+    if (enable) setGenZEmbedUrl(getGenZEmbedUrl());
+    setGenZMode(enable);
+    setLightsOff(enable);
+  };
+  const toggleLights = () => {
+    setLightsOff((v) => !v);
+    setGenZMode(false);
+  };
+  const reloadPlayer = () => {
+    setIsLoading(true);
+    if (iframeRef.current) iframeRef.current.src = getEmbedUrl();
+  };
+  const barButtonClass = (on: boolean) =>
+    `p-2 rounded-lg transition-all active:scale-95 ${on ? 'text-accent bg-accent/15' : 'text-white/85 hover:text-white hover:bg-white/10'}`;
+
   return (
     <div className="space-y-6">
       {/* Reserves the player's place in the page flow. The player itself is
@@ -616,6 +647,30 @@ const VideoPlayer = ({
                   frameBorder="0"
                 />
 
+                {appControls && desktopPlayer && (
+                  <PlayerControls
+                    player={desktopPlayer}
+                    onToggleFullscreen={toggleFullscreen}
+                    onNext={onNext}
+                    nextLabel={nextLabel}
+                    onUseServerControls={() => setControlsMode('server')}
+                    onStreamChange={setControllingStream}
+                    extra={
+                      <>
+                        <button onClick={toggleGenZ} title={genZMode ? 'Exit Gen Z Mode' : 'Gen Z Mode'} className={barButtonClass(genZMode)}>
+                          <Rows2 size={18} />
+                        </button>
+                        <button onClick={toggleLights} title={lightsOff ? 'Lights On' : 'Lights Off'} className={barButtonClass(lightsOff)}>
+                          {lightsOff ? <Lightbulb size={18} /> : <LightbulbOff size={18} />}
+                        </button>
+                        <button onClick={reloadPlayer} title="Reload Player" className={barButtonClass(false)}>
+                          <RefreshCw size={17} />
+                        </button>
+                      </>
+                    }
+                  />
+                )}
+
                 {overlay && <div className="absolute inset-0 z-20 pointer-events-none">{overlay}</div>}
 
                 {/* Server switches and resume, said where you're looking. */}
@@ -659,14 +714,11 @@ const VideoPlayer = ({
               )}
             </div>
 
+            {/* The app's controls carry all of these once they're up. */}
+            {!ourControls && (
             <div className="absolute top-4 right-4 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-30">
               <button
-                onClick={() => {
-                  const enable = !genZMode;
-                  if (enable) setGenZEmbedUrl(getGenZEmbedUrl());
-                  setGenZMode(enable);
-                  setLightsOff(enable);
-                }}
+                onClick={toggleGenZ}
                 className={`p-2 backdrop-blur-md rounded-full transition-colors border ${
                   genZMode
                     ? 'bg-gradient-to-r from-pink-500 to-purple-500 text-white border-transparent'
@@ -693,10 +745,7 @@ const VideoPlayer = ({
                 <Maximize size={18} />
               </button>
               <button
-                onClick={() => {
-                  setLightsOff((v) => !v);
-                  setGenZMode(false);
-                }}
+                onClick={toggleLights}
                 className={`p-2 backdrop-blur-md rounded-full transition-colors border ${
                   lightsOff
                     ? 'bg-accent/80 text-white border-accent'
@@ -707,16 +756,14 @@ const VideoPlayer = ({
                 {lightsOff ? <Lightbulb size={18} /> : <LightbulbOff size={18} />}
               </button>
               <button
-                onClick={() => {
-                  setIsLoading(true);
-                  if (iframeRef.current) iframeRef.current.src = getEmbedUrl();
-                }}
+                onClick={reloadPlayer}
                 className="p-2 bg-black/60 backdrop-blur-md rounded-full text-white/70 hover:text-white transition-colors border border-white/10"
                 title="Reload Player"
               >
                 <RefreshCw size={18} />
               </button>
             </div>
+            )}
           </div>
         </>,
         document.body
@@ -730,6 +777,22 @@ const VideoPlayer = ({
             <div className="flex items-center gap-2">{controls}</div>
           ) : (
             <span />
+          )}
+
+          {desktopPlayer && (
+            <button
+              onClick={() => setControlsMode(appControls ? 'server' : 'app')}
+              role="switch"
+              aria-checked={appControls}
+              title="Lwedflix's own player controls, or the server's"
+              className="flex items-center gap-2 px-3 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest text-white/60 hover:text-white transition-colors whitespace-nowrap"
+            >
+              <SlidersHorizontal size={12} />
+              <span>Lwedflix controls</span>
+              <span className={`relative w-7 h-4 rounded-full transition-colors ${appControls ? 'bg-accent' : 'bg-white/15'}`}>
+                <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${appControls ? 'left-3.5' : 'left-0.5'}`} />
+              </span>
+            </button>
           )}
 
           {/* Server Selection */}

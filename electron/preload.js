@@ -61,7 +61,8 @@ function playerBridge() {
   // Anything shorter is an ad or a preview, not the feature.
   const MIN_DURATION_S = 240;
   let video = null;
-  let lastTimeUpdate = 0;
+  let lastProgress = 0;
+  let clean = null;
 
   const report = (type) =>
     ipcRenderer.send('player:state', {
@@ -69,9 +70,17 @@ function playerBridge() {
       playing: !video.paused,
       time: video.currentTime,
       duration: video.duration,
+      muted: video.muted,
+      volume: video.volume,
+      rate: video.playbackRate,
+      buffered: bufferedUntil(video),
+      buffering: !video.paused && video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA,
+      tracks: subtitleTracks(video).map((t) => ({ label: t.label, language: t.language })),
+      track: shownTrack(video),
     });
 
-  for (const type of ['play', 'pause', 'seeked', 'timeupdate', 'loadedmetadata', 'ended']) {
+  const EVENTS = ['play', 'pause', 'seeked', 'timeupdate', 'progress', 'loadedmetadata', 'ended', 'volumechange', 'ratechange', 'waiting', 'playing'];
+  for (const type of EVENTS) {
     // Media events don't bubble, but a capturing listener on the document
     // still sees them, including from <video> elements created later.
     document.addEventListener(
@@ -79,20 +88,30 @@ function playerBridge() {
       (event) => {
         const target = event.target;
         if (!(target instanceof HTMLVideoElement) || !(target.duration >= MIN_DURATION_S)) return;
-        if (type === 'timeupdate') {
-          if (Date.now() - lastTimeUpdate < 1000) return;
-          lastTimeUpdate = Date.now();
+        if (type === 'timeupdate' || type === 'progress') {
+          if (Date.now() - lastProgress < 1000) return;
+          lastProgress = Date.now();
         }
-        if (video !== target) {
-          video = target;
-          // Lets the main process find it from the page's own world (the
-          // mini player needs a user gesture there).
-          video.dataset.lwedflixStream = '';
-        }
+        if (video !== target) adopt(target);
         report(type);
       },
       true
     );
+  }
+
+  function adopt(target) {
+    video = target;
+    // Lets the main process find it from the page's own world (the mini
+    // player needs a user gesture there).
+    video.dataset.lwedflixStream = '';
+    // Subtitles chosen in the server's menu, or ours.
+    video.textTracks.addEventListener('change', () => report('tracks'));
+    video.textTracks.addEventListener('addtrack', () => report('tracks'));
+    // A new <video> (after an ad, say) takes over the cleaned-up frame.
+    if (clean) {
+      clean.off();
+      clean = keepOnly(video);
+    }
   }
 
   window.addEventListener('pagehide', () => {
@@ -102,6 +121,34 @@ function playerBridge() {
   ipcRenderer.on('player:command', (_event, command) => {
     if (!video) return;
     switch (command.action) {
+      case 'report':
+        report('status');
+        break;
+      case 'clean':
+        if (command.on && !clean) clean = keepOnly(video);
+        if (!command.on && clean) {
+          clean.off();
+          clean = null;
+        }
+        break;
+      case 'setVolume':
+        video.volume = command.volume;
+        if (command.volume > 0) video.muted = false;
+        break;
+      case 'setMuted':
+        video.muted = command.muted;
+        break;
+      case 'setRate':
+        video.playbackRate = command.rate;
+        break;
+      case 'liftSubtitles':
+        document.documentElement.style.setProperty('--lwedflix-lift', `${command.px}px`);
+        break;
+      case 'setTrack':
+        subtitleTracks(video).forEach((t, i) => {
+          t.mode = i === command.index ? 'showing' : 'disabled';
+        });
+        break;
       case 'seek':
         video.currentTime = command.time;
         break;
@@ -124,8 +171,119 @@ function playerBridge() {
     }
   });
 
+  // A frame further down holds the stream and has been cleaned up: show
+  // nothing here but the <iframe> it's in.
+  let framed = null;
+  window.addEventListener('message', (event) => {
+    const on = event.data?.lwedflixClean;
+    if (typeof on !== 'boolean') return;
+    const frame = [...document.querySelectorAll('iframe, frame')].find((f) => f.contentWindow === event.source);
+    if (!frame) return;
+    framed?.off();
+    framed = on ? keepOnly(frame) : null;
+  });
+
   watchForProblems(() => video !== null);
   forwardShortcuts(() => video);
+}
+
+// The app draws its own controls over the player, so the server's have to
+// go. Everything in this frame but `keep` — the stream's <video>, or the
+// <iframe> leading to it — is hidden, and `keep` fills the frame. The frame
+// above is then asked to do the same for the <iframe> this frame is in, and
+// so on up to the app. Done with CSS and attributes only, so turning it off
+// puts the server's player back exactly as it was.
+const CLEAN_CSS = `
+  html, body { background: #000 !important; overflow: hidden !important; }
+  body * { visibility: hidden !important; pointer-events: none !important; }
+  [data-lwedflix-path] {
+    transform: none !important; filter: none !important; backdrop-filter: none !important;
+    perspective: none !important; contain: none !important; will-change: auto !important;
+    clip-path: none !important; mask: none !important; opacity: 1 !important;
+  }
+  [data-lwedflix-keep] {
+    visibility: visible !important; pointer-events: auto !important; opacity: 1 !important;
+    position: fixed !important; inset: 0 !important; z-index: 2147483647 !important;
+    width: 100vw !important; height: 100vh !important; margin: 0 !important; padding: 0 !important;
+    min-width: 0 !important; min-height: 0 !important; max-width: none !important; max-height: none !important;
+    border: 0 !important; transform: none !important; background: #000 !important;
+  }
+  video[data-lwedflix-keep] { object-fit: contain !important; }
+  video[data-lwedflix-keep]::-webkit-media-controls { display: none !important; }
+  /* Subtitles rise above the app's controls while they're showing. */
+  video[data-lwedflix-keep]::-webkit-media-text-track-container {
+    transform: translateY(calc(-1 * var(--lwedflix-lift, 0px))) !important;
+    transition: transform 0.25s ease !important;
+  }
+`;
+
+function keepOnly(keep) {
+  const style = document.createElement('style');
+  style.textContent = CLEAN_CSS;
+  (document.head || document.documentElement).append(style);
+
+  // Players re-render; the marks are put back on whatever is there now.
+  const mark = () => {
+    keep.setAttribute('data-lwedflix-keep', '');
+    for (let el = keep.parentElement; el; el = el.parentElement) el.setAttribute('data-lwedflix-path', '');
+  };
+  mark();
+  const timer = setInterval(mark, 1000);
+
+  const restore = [];
+  if (keep instanceof HTMLVideoElement) {
+    if (keep.controls) {
+      keep.controls = false;
+      restore.push(() => (keep.controls = true));
+    }
+    // Subtitles a server draws itself (track mode 'hidden') are hidden
+    // along with the rest; the browser draws the same track instead.
+    for (const track of subtitleTracks(keep)) {
+      if (track.mode !== 'hidden') continue;
+      track.mode = 'showing';
+      restore.push(() => {
+        if (track.mode === 'showing') track.mode = 'hidden';
+      });
+    }
+  }
+
+  const tellParent = (on) => {
+    if (window.parent !== window.top) window.parent.postMessage({ lwedflixClean: on }, '*');
+  };
+  tellParent(true);
+
+  return {
+    off() {
+      clearInterval(timer);
+      style.remove();
+      for (const el of document.querySelectorAll('[data-lwedflix-keep], [data-lwedflix-path]')) {
+        el.removeAttribute('data-lwedflix-keep');
+        el.removeAttribute('data-lwedflix-path');
+      }
+      restore.forEach((undo) => undo());
+      tellParent(false);
+    },
+  };
+}
+
+function subtitleTracks(video) {
+  return [...video.textTracks].filter((t) => t.kind === 'subtitles' || t.kind === 'captions');
+}
+
+/** The track on screen: one the browser draws, else one the server draws itself. */
+function shownTrack(video) {
+  const tracks = subtitleTracks(video);
+  const showing = tracks.findIndex((t) => t.mode === 'showing');
+  return showing !== -1 ? showing : tracks.findIndex((t) => t.mode === 'hidden');
+}
+
+/** Where the buffered stretch the playhead is in ends. */
+function bufferedUntil(video) {
+  const { buffered, currentTime } = video;
+  for (let i = 0; i < buffered.length; i++) {
+    if (buffered.start(i) <= currentTime + 0.5 && currentTime <= buffered.end(i)) return buffered.end(i);
+  }
+  return currentTime;
 }
 
 // A server that can't play a title says so in its own words, often before

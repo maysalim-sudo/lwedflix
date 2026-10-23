@@ -6,9 +6,11 @@
 // process bound to 127.0.0.1, and the window loads it once the intro has
 // played.
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, screen, session, shell, utilityProcess } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, net: electronNet, screen, session, shell, utilityProcess } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { installAdBlock } = require('./adblock');
+const { cleanState, cleanCommand } = require('./playerProtocol');
+const { createMacUpdater } = require('./macUpdater');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
@@ -33,9 +35,6 @@ const APP_PERMISSIONS = new Set(['fullscreen', 'clipboard-sanitized-write']);
 const PROTOCOL = 'lwedflix';
 const DEEP_LINK_PATH = /^\/(?:(?:movie|tv|person)\/\d{1,10}|(?:watch|invite|p|u|c)\/[\w.-]{1,64})$/;
 const DEEP_LINK_QUERY = /^(\?[\w=&-]{0,100})?$/;
-
-const PLAYER_EVENTS = new Set(['play', 'pause', 'seeked', 'timeupdate', 'loadedmetadata', 'ended']);
-const PLAYER_ACTIONS = new Set(['play', 'pause', 'toggle', 'toggleMute']);
 
 // Runs in the player frame's own world (where the provider's code lives), as
 // a user gesture — picture-in-picture refuses to start without one. The
@@ -160,27 +159,17 @@ async function start() {
       mainWindow.webContents.send('player:state', null);
       return;
     }
-    if (!PLAYER_EVENTS.has(state?.event)) return;
+    const clean = cleanState(state);
+    if (!clean) return;
     playerFrame = frame;
-    mainWindow.webContents.send('player:state', {
-      event: state.event,
-      playing: Boolean(state.playing),
-      time: Number(state.time) || 0,
-      duration: Number(state.duration) || 0,
-    });
+    mainWindow.webContents.send('player:state', clean);
   });
-  ipcMain.on('player:command', (event, command) => {
+  ipcMain.on('player:command', (event, raw) => {
     if (!isFromAppPage(event) || !playerFrame || playerFrame.isDestroyed() || playerFrame.detached) return;
-    const action = command?.action;
-    if (PLAYER_ACTIONS.has(action)) {
-      playerFrame.send('player:command', { action });
-    } else if (action === 'seek' && Number.isFinite(command.time) && command.time >= 0) {
-      playerFrame.send('player:command', { action, time: command.time });
-    } else if (action === 'seekBy' && Number.isFinite(command.delta) && Math.abs(command.delta) <= 600) {
-      playerFrame.send('player:command', { action, delta: command.delta });
-    } else if (action === 'pip') {
-      playerFrame.executeJavaScript(PICTURE_IN_PICTURE, true).catch(() => {});
-    }
+    const command = cleanCommand(raw);
+    if (!command) return;
+    if (command.action === 'pip') playerFrame.executeJavaScript(PICTURE_IN_PICTURE, true).catch(() => {});
+    else playerFrame.send('player:command', command);
   });
 
   // From inside the embedded players: a server that can't play the title,
@@ -383,10 +372,12 @@ function navigate(direction) {
 }
 
 // ---- Updates -------------------------------------------------------------
-// New versions are GitHub releases (`npm run release`, see README). Windows
-// downloads them in the background and installs on restart. macOS only
-// installs updates signed with the same Apple Developer ID as the running
-// app, which ad-hoc builds don't have, so there the app offers the download.
+// New versions are GitHub releases (see README). Every platform downloads
+// them in the background and installs on restart: Windows and Linux through
+// electron-updater, macOS through macUpdater.js — electron-updater only
+// installs there when the new version is signed with the same Apple
+// Developer ID, which ad-hoc builds don't have. A Mac copy that can't
+// replace itself (still on the disk image, say) is offered the download.
 
 const CAN_INSTALL_UPDATES = !isMac;
 const FIRST_UPDATE_CHECK_MS = 15_000; // after the intro, not over it
@@ -397,6 +388,7 @@ let updatesReady = false;
 let manualUpdateCheck = false;
 // Each version is offered once per session, unless asked for from the menu.
 const offeredVersions = new Set();
+let macUpdater = null;
 
 function setUpUpdates() {
   // An unpackaged run has no update feed (app-update.yml) to read.
@@ -408,8 +400,30 @@ function setUpUpdates() {
   autoUpdater.autoDownload = CAN_INSTALL_UPDATES;
   autoUpdater.autoInstallOnAppQuit = CAN_INSTALL_UPDATES;
 
+  if (isMac) {
+    macUpdater = createMacUpdater({
+      fetch: (url) => electronNet.fetch(url),
+      log: write('info'),
+      workDir: path.join(app.getPath('userData'), 'updates'),
+      releasesUrl: RELEASES_URL,
+      // Flags this run was started with (a test's --user-data-dir, say)
+      // carry over to the relaunch; links don't.
+      args: process.argv.slice(1).filter((arg) => arg.startsWith('--')),
+    });
+    if (macUpdater.blocked) write('info')(`Can't update in place: ${macUpdater.blocked}`);
+    reportLastMacInstall(macUpdater.takeLastResult(), write);
+    // "Later": the update goes in as the app quits.
+    app.on('will-quit', () => macUpdater.install(false));
+  }
+
   autoUpdater.on('update-available', (info) => {
-    if (!CAN_INSTALL_UPDATES) {
+    if (macUpdater && !macUpdater.blocked) {
+      if (manualUpdateCheck) showUpdateMessage(`Downloading Lwedflix ${info.version}`, "You'll be asked to restart when it's ready.");
+      macUpdater.prepare(info).then(offerRestart, (err) => {
+        write('error')(`Update ${info.version} failed: ${err.message}`);
+        offerDownload(info);
+      });
+    } else if (!CAN_INSTALL_UPDATES) {
       offerDownload(info);
     } else if (manualUpdateCheck) {
       showUpdateMessage(`Downloading Lwedflix ${info.version}`, "You'll be asked to restart when it's ready.");
@@ -462,7 +476,30 @@ async function offerRestart(version) {
     message: `Lwedflix ${version} is ready`,
     detail: 'Restart to finish updating. Choose Later and it installs the next time you quit.',
   });
-  if (response === 0) autoUpdater.quitAndInstall();
+  if (response !== 0) return;
+  if (macUpdater?.readyVersion === version) {
+    macUpdater.install(true);
+    app.quit();
+  } else {
+    autoUpdater.quitAndInstall();
+  }
+}
+
+// Whether the swap after the last quit worked (it runs once the app is gone,
+// so this launch is the first to know).
+function reportLastMacInstall(result, write) {
+  if (!result) return;
+  if (result === 'ok') {
+    write('info')(`Updated to ${app.getVersion()}`);
+    return;
+  }
+  write('error')(`Last update didn't install: ${result}`);
+  app.whenReady().then(() =>
+    showUpdateMessage(
+      "Lwedflix couldn't finish updating",
+      'It will try again with the next update. You can also download the latest version from the Lwedflix releases page.'
+    )
+  );
 }
 
 async function offerDownload({ version, files = [] }) {
@@ -474,7 +511,9 @@ async function offerDownload({ version, files = [] }) {
     defaultId: 0,
     cancelId: 1,
     message: `Lwedflix ${version} is available`,
-    detail: `You have ${app.getVersion()}. Open the download and drag Lwedflix into Applications to replace this version.`,
+    detail:
+      `You have ${app.getVersion()}. Open the download and drag Lwedflix into Applications to replace this version.` +
+      (macUpdater?.blocked ? ` (Lwedflix can't update itself here because ${macUpdater.blocked}.)` : ''),
   });
   if (response !== 0) return;
   // Straight to this Mac's DMG (the Apple Silicon one is named -arm64) when

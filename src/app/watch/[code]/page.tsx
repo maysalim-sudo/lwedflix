@@ -491,6 +491,8 @@ export default function WatchPartyPage() {
               onProgress={(p) => {
                 myPosition.current = { ...p, episodeKey };
               }}
+              onNext={amHost && nextEpisode ? () => changeEpisode(nextEpisode) : undefined}
+              nextLabel={nextEpisode ? `S${nextEpisode.season} E${nextEpisode.episode}` : undefined}
               overlay={
                 <>
                   <ReactionsOverlay reactions={reactions} />

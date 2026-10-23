@@ -294,6 +294,8 @@ const TVPlayerContainer = ({ show }: TVPlayerContainerProps) => {
             onProgress={handleProgress}
             controls={episodeControls}
             resumeAt={resumeAt}
+            onNext={nextEpisode ? goToNextEpisode : undefined}
+            nextLabel={nextEpisode ? `S${nextEpisode.season} E${nextEpisode.episode}` : undefined}
             overlay={
               nextEpisode && (
                 <UpNextCard

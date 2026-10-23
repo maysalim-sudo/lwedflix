@@ -9,6 +9,12 @@ for macOS, Windows and Linux.
   next one automatically.
 - Movies and episodes resume where you stopped; at the end of an episode,
   *Up next* counts down to the next one (across seasons too).
+- Lwedflix's own player controls on every server: once a stream plays, the
+  server's player interface (and its ads) is hidden and replaced with one
+  seek bar, volume, speed, subtitles (for streams that carry them), mini
+  player, fullscreen and next episode. *Use the server's controls* in the
+  settings menu, or the switch under the player, brings a server's own
+  menus back.
 - Player shortcuts: Space/K play-pause, ←/J and →/L ±10 s, M mute,
   F fullscreen, P mini player (picture-in-picture).
 - The players' ad and tracker requests are blocked, and so are the
@@ -36,7 +42,9 @@ src/               the app: pages (src/app), components, libraries
 electron/
   main.js          window, local server, deep links, updates, player relay
   preload.js       the bridges: intro, app, and the player bridge
+  playerProtocol.js  what may cross the player bridge (states in, commands out)
   adblock.js       ad/tracker blocklist and download blocking
+  macUpdater.js    self-updating on macOS without an Apple Developer ID
   intro/           the launch animation
 scripts/           build-server.mjs, make-icon.mjs, release.mjs
 tests/             unit tests (node:test); tests/e2e: harnesses run in Electron
@@ -48,7 +56,9 @@ supabase/          database schema, as migrations
 
 **The player bridge** is what a website can't do: the preload also runs
 inside the embedded players' cross-origin frames (`nodeIntegrationInSubFrames`),
-finds the `<video>`, reports its state and applies play/pause/seek. Watch
+finds the `<video>`, reports its state and applies play/pause/seek. It can
+also hide everything in the server's frames except the video ("clean"
+mode), which is what lets the app draw its own controls over it. Watch
 parties sync through it (`src/lib/partySync.ts`), and progress, resume,
 *Up next*, shortcuts, the mini player and automatic server switching work on
 every server because of it.
@@ -153,12 +163,32 @@ refused. The draft comes first because uploads run in parallel: with no
 release to upload into, each one creates its own, leaving duplicate
 releases for one tag.
 
-Windows and Linux download updates in the background and install on restart.
-macOS can only install updates signed with the same Apple Developer ID as the
-running app, which ad-hoc builds don't have, so there the app offers the
-download instead. Fully automatic macOS updates need a Developer ID ($99/year):
-set `mac.identity` to it, re-enable `hardenedRuntime`, add notarization, and
-set `CAN_INSTALL_UPDATES` in `electron/main.js` to `true` on macOS too.
+Every platform downloads updates in the background and installs them on
+restart (or when the app quits). Windows and the Linux AppImage do it
+silently; the Linux .deb asks for the password, since it's a system package.
+A downloaded update never shows the "unknown publisher" or "could not
+verify" warnings: those only apply to files a browser downloaded, so each
+person sees them once, on first install.
+
+macOS is handled by `electron/macUpdater.js` rather than electron-updater,
+which only installs updates signed with the same Apple Developer ID as the
+running app (ad-hoc builds have none). It downloads the release's zip for
+the Mac, checks it against the sha512 in `latest-mac.yml`, unpacks it,
+verifies its version and signature, and swaps it in once the app has quit.
+That needs a copy it can write to: one run from the disk image, or from
+where macOS put it after download, is offered the download instead.
+
+To check it by hand: build a copy with an older version (`npx
+electron-builder --mac dir --arm64 -c.extraMetadata.version=1.0.0`, then
+copy `app-update.yml` from a release build into its `Contents/Resources`
+and re-sign it with `codesign --force --deep -s -`), run it with
+`--user-data-dir=<a scratch folder>`, and quit it once `updates.log` says
+"Ready to install".
+
+With an Apple Developer ID ($99/year) instead: set `mac.identity` to it,
+re-enable `hardenedRuntime`, add notarization, and set `CAN_INSTALL_UPDATES`
+in `electron/main.js` to `true` on macOS, which hands updates back to
+electron-updater.
 
 ## Download page
 
